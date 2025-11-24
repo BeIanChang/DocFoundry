@@ -6,6 +6,7 @@ services:
       - "8000:8000"
     environment:
       - CHROMA_DIR=/data/chroma
+      - DATABASE_URL=postgresql://postgres:postgres@postgres:5432/docfoundry
     volumes:
       - ./backend:/app
       - ./chroma_db:/data/chroma
@@ -15,3 +16,14 @@ services:
       - "3000:3000"
     volumes:
       - ./frontend:/usr/src/app
+  postgres:
+    image: postgres:15-alpine
+    environment:
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=postgres
+      - POSTGRES_DB=docfoundry
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+volumes:
+  pgdata:

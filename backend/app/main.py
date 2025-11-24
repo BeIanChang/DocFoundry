@@ -5,6 +5,15 @@ import tempfile
 import os
 from app.parsers.pdf_parser import parse_file
 from app.embeddings.vector_store import add_documents, query_documents
+from app.db.session import get_engine
+from app.db import models as models
+
+
+@app.on_event("startup")
+def startup_db():
+    # create tables if they don't exist
+    engine = get_engine()
+    models.Base.metadata.create_all(bind=engine)
 
 app = FastAPI(title="DocFoundry")
 
