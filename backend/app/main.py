@@ -3,10 +3,11 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 import tempfile
 import os
-from app.parsers.pdf_parser import parse_file
-from app.embeddings.vector_store import add_documents, query_documents
+# import parsers lazily (parsing libs are optional in dev image)
 from app.db.session import get_engine
 from app.db import models as models
+
+app = FastAPI(title="DocFoundry")
 
 
 @app.on_event("startup")
@@ -15,9 +16,14 @@ def startup_db():
     engine = get_engine()
     models.Base.metadata.create_all(bind=engine)
 
-app = FastAPI(title="DocFoundry")
-
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+
+# include API routers
+from app.api.kb import router as kb_router
+from app.api.documents import router as documents_router
+
+app.include_router(kb_router)
+app.include_router(documents_router)
 
 @app.get("/health")
 def health():
@@ -28,12 +34,18 @@ async def upload(file: UploadFile = File(...)):
     filename = file.filename
     data = await file.read()
     try:
+        from app.parsers.pdf_parser import parse_file
         text = parse_file(filename, data)
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
-    # Add to vector store (placeholder)
-    add_documents([{"id": filename, "text": text}])
+    # Add to vector store (placeholder). import lazily so dev image doesn't require heavy libs
+    try:
+        from app.embeddings.vector_store import add_documents
+        add_documents([{"id": filename, "text": text}])
+    except Exception:
+        # embedding subsystem is optional in dev mode
+        pass
 
     return {"filename": filename, "size": len(data), "preview": text[:500]}
 
@@ -42,7 +54,11 @@ async def qa(query: dict):
     q = query.get("query")
     if not q:
         raise HTTPException(status_code=400, detail="missing query")
-    results = query_documents(q)
+    try:
+        from app.embeddings.vector_store import query_documents
+        results = query_documents(q)
+    except Exception:
+        results = {"ids": [], "documents": [], "distances": []}
     return JSONResponse({"query": q, "results": results})
 
 @app.post("/workflow")

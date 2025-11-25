@@ -85,7 +85,7 @@ class Chunk(Base):
     text = Column(Text)
     start_pos = Column(Integer)
     end_pos = Column(Integer)
-    metadata = Column(JSON)
+    meta = Column(JSON)
     version = relationship('DocumentVersion', back_populates='chunks')
 
 
@@ -95,7 +95,7 @@ class ChatSession(Base):
     user_id = Column(String(36), ForeignKey('users.id'), nullable=True)
     kb_id = Column(String(36), ForeignKey('knowledge_bases.id'), nullable=True)
     started_at = Column(DateTime(timezone=True), server_default=func.now())
-    metadata = Column(JSON)
+    meta = Column(JSON)
     messages = relationship('ChatMessage', back_populates='session')
 
 
