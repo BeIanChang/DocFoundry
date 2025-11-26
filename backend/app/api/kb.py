@@ -11,21 +11,26 @@ router = APIRouter(prefix="/kb", tags=["knowledge_bases"])
 
 @router.post("/", response_model=KnowledgeBaseRead)
 def create_kb(payload: KnowledgeBaseCreate, db: Session = Depends(get_session)):
-    kb = models.KnowledgeBase(
-        project_id=payload.project_id,
-        name=payload.name,
-        description=payload.description,
-    )
-    db.add(kb)
-    db.commit()
-    db.refresh(kb)
+    try:
+        kb = models.KnowledgeBase(
+            project_id=payload.project_id,
+            name=payload.name,
+            description=payload.description,
+        )
+        db.add(kb)
+        db.commit()
+        db.refresh(kb)
+    except Exception as exc:
+        # In dev mode, return the exception detail so it's easier to debug
+        # (In production you'd log and return a generic message)
+        raise HTTPException(status_code=500, detail=f"create_kb failed: {exc}")
     return {
         "id": kb.id,
         "project_id": kb.project_id,
         "name": kb.name,
         "description": kb.description,
-        "metadata": getattr(kb, "metadata", None),
-        "created_at": kb.created_at,
+        "metadata": None,
+        "created_at": kb.created_at.isoformat() if kb.created_at else None,
     }
 
 
@@ -42,8 +47,9 @@ def list_kb(project_id: str = None, db: Session = Depends(get_session)):
             "project_id": k.project_id,
             "name": k.name,
             "description": k.description,
-            "metadata": getattr(k, "metadata", None),
-            "created_at": k.created_at,
+            # KnowledgeBase model does not have an instance-level 'metadata' column
+            "metadata": None,
+            "created_at": k.created_at.isoformat() if k.created_at else None,
         })
     return out
 
@@ -58,8 +64,8 @@ def get_kb(kb_id: str, db: Session = Depends(get_session)):
         "project_id": kb.project_id,
         "name": kb.name,
         "description": kb.description,
-        "metadata": getattr(kb, "metadata", None),
-        "created_at": kb.created_at,
+        "metadata": None,
+        "created_at": kb.created_at.isoformat() if kb.created_at else None,
     }
 
 
@@ -80,8 +86,8 @@ def update_kb(kb_id: str, payload: KnowledgeBaseUpdate, db: Session = Depends(ge
         "project_id": kb.project_id,
         "name": kb.name,
         "description": kb.description,
-        "metadata": getattr(kb, "metadata", None),
-        "created_at": kb.created_at,
+        "metadata": None,
+        "created_at": kb.created_at.isoformat() if kb.created_at else None,
     }
 
 

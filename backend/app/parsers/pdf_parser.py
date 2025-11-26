@@ -1,6 +1,5 @@
 import io
 import os
-from pypdf import PdfReader
 
 
 def parse_file(filename: str, raw_bytes: bytes) -> str:
@@ -8,8 +7,12 @@ def parse_file(filename: str, raw_bytes: bytes) -> str:
     _, ext = os.path.splitext(filename.lower())
     if ext == '.pdf':
         stream = io.BytesIO(raw_bytes)
-        reader = PdfReader(stream)
+        try:
+            from pypdf import PdfReader
+        except Exception as e:
+            raise RuntimeError('pypdf is not installed in the runtime image') from e
         texts = []
+        reader = PdfReader(stream)
         for p in reader.pages:
             try:
                 texts.append(p.extract_text() or "")

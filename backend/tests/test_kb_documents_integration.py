@@ -79,3 +79,36 @@ def test_document_crud():
 
     # cleanup kb
     requests.delete(f"{BASE}/kb/{kb_id}")
+
+
+@pytest.mark.skipif(not _server_available(), reason="backend server not available at http://localhost:8000")
+def test_create_document_with_invalid_kb_returns_404():
+    # try to create a document referencing a non-existent kb
+    payload = {"title": "doc-bad-kb", "kb_id": "00000000-0000-0000-0000-000000000000"}
+    r = requests.post(f"{BASE}/documents/", json=payload)
+    assert r.status_code == 404, r.text
+
+
+@pytest.mark.skipif(not _server_available(), reason="backend server not available at http://localhost:8000")
+def test_document_upload_and_chunking():
+    # create a kb and document
+    r = requests.post(f"{BASE}/kb/", json={"name": "kb-for-upload", "description": "d"})
+    assert r.status_code == 200
+    kb_id = r.json()["id"]
+
+    r2 = requests.post(f"{BASE}/documents/", json={"title": "filedoc", "kb_id": kb_id})
+    assert r2.status_code == 200
+    doc_id = r2.json()["id"]
+
+    small_text = "Hello world. " * 200
+    files = {"file": ("hello.txt", small_text, "text/plain")}
+
+    r3 = requests.post(f"{BASE}/documents/{doc_id}/upload", files=files)
+    assert r3.status_code == 200, r3.text
+    j = r3.json()
+    assert j.get("version_id")
+    assert j.get("chunks_created", 0) > 0
+
+    # cleanup: remove rows via API
+    requests.delete(f"{BASE}/documents/{doc_id}")
+    requests.delete(f"{BASE}/kb/{kb_id}")

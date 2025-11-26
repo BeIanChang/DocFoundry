@@ -1,29 +1,41 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
 from sqlalchemy.orm import Session
 from typing import List
 
 from app.db.session import get_session
 from app.db import models
 from app.schemas import DocumentCreate, DocumentRead, DocumentUpdate
+from app.parsers.chunker import chunk_text
 
 router = APIRouter(prefix="/documents", tags=["documents"])
 
 
 @router.post("/", response_model=DocumentRead)
 def create_document(payload: DocumentCreate, db: Session = Depends(get_session)):
+    # validate kb_id if provided
+    if payload.kb_id:
+        kb = db.get(models.KnowledgeBase, payload.kb_id)
+        if not kb:
+            raise HTTPException(status_code=404, detail="knowledge base not found")
+
     doc = models.Document(
         title=payload.title,
         kb_id=payload.kb_id,
     )
-    db.add(doc)
-    db.commit()
-    db.refresh(doc)
+    try:
+        db.add(doc)
+        db.commit()
+        db.refresh(doc)
+    except Exception as exc:
+        # provide better error message in dev when DB constraints fail
+        raise HTTPException(status_code=400, detail=f"failed to create document: {exc}")
     return {
         "id": doc.id,
         "kb_id": doc.kb_id,
         "title": doc.title,
-        "metadata": getattr(doc, "metadata", None),
-        "created_at": doc.created_at,
+        # Document currently has no instance-level 'metadata' column defined in models
+        "metadata": None,
+        "created_at": doc.created_at.isoformat() if doc.created_at else None,
     }
 
 
@@ -39,8 +51,8 @@ def list_documents(kb_id: str = None, db: Session = Depends(get_session)):
             "id": d.id,
             "kb_id": d.kb_id,
             "title": d.title,
-            "metadata": getattr(d, "metadata", None),
-            "created_at": d.created_at,
+            "metadata": None,
+            "created_at": d.created_at.isoformat() if d.created_at else None,
         })
     return out
 
@@ -54,8 +66,8 @@ def get_document(doc_id: str, db: Session = Depends(get_session)):
         "id": doc.id,
         "kb_id": doc.kb_id,
         "title": doc.title,
-        "metadata": getattr(doc, "metadata", None),
-        "created_at": doc.created_at,
+        "metadata": None,
+        "created_at": doc.created_at.isoformat() if doc.created_at else None,
     }
 
 
@@ -75,8 +87,8 @@ def update_document(doc_id: str, payload: DocumentUpdate, db: Session = Depends(
         "id": doc.id,
         "kb_id": doc.kb_id,
         "title": doc.title,
-        "metadata": getattr(doc, "metadata", None),
-        "created_at": doc.created_at,
+        "metadata": None,
+        "created_at": doc.created_at.isoformat() if doc.created_at else None,
     }
 
 
@@ -88,3 +100,41 @@ def delete_document(doc_id: str, db: Session = Depends(get_session)):
     db.delete(doc)
     db.commit()
     return {"status": "deleted"}
+
+
+@router.post("/{doc_id}/upload")
+async def upload_document_file(doc_id: str, file: UploadFile = File(...), db: Session = Depends(get_session)):
+    """Upload a file for an existing document, parse it, create a new DocumentVersion and chunk entries."""
+    doc = db.get(models.Document, doc_id)
+    if not doc:
+        raise HTTPException(status_code=404, detail="document not found")
+
+    data = await file.read()
+    try:
+        from app.parsers.pdf_parser import parse_file
+
+        text = parse_file(file.filename, data)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"failed to parse file: {e}")
+
+    # determine next version number
+    try:
+        last_ver = db.query(models.DocumentVersion).filter(models.DocumentVersion.document_id == doc_id).order_by(models.DocumentVersion.version_number.desc()).first()
+        next_ver = 1 if not last_ver else (last_ver.version_number + 1)
+    except Exception:
+        next_ver = 1
+
+    version = models.DocumentVersion(document_id=doc_id, version_number=next_ver, file_name=file.filename)
+    db.add(version)
+    db.commit()
+    db.refresh(version)
+
+    # chunk and store
+    chunks = chunk_text(text)
+    for c in chunks:
+        ch = models.Chunk(version_id=version.id, text=c["text"], start_pos=c["start_pos"], end_pos=c["end_pos"], meta=None)
+        db.add(ch)
+
+    db.commit()
+
+    return {"version_id": version.id, "chunks_created": len(chunks)}
