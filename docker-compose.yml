@@ -9,6 +9,8 @@ services:
       - DATABASE_URL=postgresql://postgres:postgres@postgres:5432/docfoundry
       - EMBED_MODEL=all-MiniLM-L6-v2
       - LLM_PROVIDER=stub
+      - JWT_SECRET=dev-secret-change-me
+      - JWT_EXP_MINUTES=120
     volumes:
       - ./backend:/app
       - ./chroma_db:/data/chroma

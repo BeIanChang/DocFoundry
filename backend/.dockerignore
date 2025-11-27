@@ -1,0 +1,10 @@
+.git
+__pycache__
+*.pyc
+.venv
+.env
+.DS_Store
+.pytest_cache
+docfoundry.db
+chroma_db
+alembic/versions/__pycache__

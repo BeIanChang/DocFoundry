@@ -18,6 +18,7 @@ See subfolders for instructions.
 - Frontend: Next.js at `http://localhost:3000`.
 - Dev backend container (hot-reload) is available under the `dev` profile: `docker compose --profile dev up backend-dev postgres`.
   - Avoid running `backend` and `backend-dev` together because they both bind port 8000.
+- For faster rebuilds: the backend Dockerfile uses BuildKit pip cache. Rebuild only when `requirements*.txt` change (`docker compose build backend`), otherwise use `docker compose up backend` to reuse the cached image.
 
 ## Minimal RAG flow (backend)
 
@@ -27,3 +28,9 @@ See subfolders for instructions.
   { "query": "your question", "kb_id": "<optional>", "document_id": "<optional>", "top_k": 5 }
   ```
   Returns `answer`, `sources` (chunk text, metadata, scores). Default LLM provider is a stub (`LLM_PROVIDER=stub`); swap provider when wiring a real model.
+
+## Stub auth (dev only)
+- Now uses JWT (HS256) with dev defaults. Env: `JWT_SECRET`, `JWT_EXP_MINUTES` (see docker-compose).
+- `POST /auth/register` with `{"email": "...", "password": "...", "name": "..."}` returns a JWT.
+- `POST /auth/login` returns a JWT.
+- Include `Authorization: Bearer <token>` on requests that need user context (in dev the user store is in-memory; tokens remain valid across server restarts as long as `JWT_SECRET` stays the same).

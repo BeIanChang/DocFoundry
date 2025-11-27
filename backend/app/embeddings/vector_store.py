@@ -2,12 +2,11 @@ import os
 from typing import List, Dict, Optional
 from sentence_transformers import SentenceTransformer
 import chromadb
-from chromadb.config import Settings
 
-# simple local chroma client
+# simple local chroma client (new API)
 CHROMA_DIR = os.environ.get('CHROMA_DIR', './chroma_db')
 EMBED_MODEL_NAME = os.environ.get('EMBED_MODEL', 'all-MiniLM-L6-v2')
-client = chromadb.Client(Settings(chroma_db_impl="duckdb+parquet", persist_directory=CHROMA_DIR))
+client = chromadb.PersistentClient(path=CHROMA_DIR)
 collection = client.get_or_create_collection("documents")
 
 # load a small model for embeddings — user can swap to OpenAI or others
@@ -26,7 +25,6 @@ def add_documents(docs: List[Dict]):
     metadata = [d.get('metadata') or {} for d in docs]
     embeddings = EMBED_MODEL.encode(texts, show_progress_bar=False).tolist()
     collection.add(ids=ids, documents=texts, embeddings=embeddings, metadatas=metadata)
-    client.persist()
     return ids
 
 
