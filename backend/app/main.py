@@ -21,9 +21,11 @@ app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], all
 # include API routers
 from app.api.kb import router as kb_router
 from app.api.documents import router as documents_router
+from app.api.rag import router as rag_router
 
 app.include_router(kb_router)
 app.include_router(documents_router)
+app.include_router(rag_router)
 
 @app.get("/health")
 def health():

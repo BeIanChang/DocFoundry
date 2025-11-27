@@ -6,6 +6,7 @@ from app.db.session import get_session
 from app.db import models
 from app.schemas import DocumentCreate, DocumentRead, DocumentUpdate
 from app.parsers.chunker import chunk_text
+from app.embeddings import vector_store
 
 router = APIRouter(prefix="/documents", tags=["documents"])
 
@@ -131,10 +132,35 @@ async def upload_document_file(doc_id: str, file: UploadFile = File(...), db: Se
 
     # chunk and store
     chunks = chunk_text(text)
+    chunk_models = []
     for c in chunks:
         ch = models.Chunk(version_id=version.id, text=c["text"], start_pos=c["start_pos"], end_pos=c["end_pos"], meta=None)
         db.add(ch)
+        chunk_models.append(ch)
 
     db.commit()
+    # ensure IDs populated
+    for ch in chunk_models:
+        db.refresh(ch)
+
+    # push embeddings to vector store with metadata for filtering
+    try:
+        vector_store.add_documents([
+            {
+                "id": ch.id,
+                "text": ch.text,
+                "metadata": {
+                    "kb_id": doc.kb_id,
+                    "document_id": doc.id,
+                    "version_id": version.id,
+                    "start_pos": ch.start_pos,
+                    "end_pos": ch.end_pos,
+                },
+            }
+            for ch in chunk_models
+        ])
+    except Exception:
+        # embeddings are optional in dev; ignore failures
+        pass
 
     return {"version_id": version.id, "chunks_created": len(chunks)}

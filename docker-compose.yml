@@ -7,6 +7,8 @@ services:
     environment:
       - CHROMA_DIR=/data/chroma
       - DATABASE_URL=postgresql://postgres:postgres@postgres:5432/docfoundry
+      - EMBED_MODEL=all-MiniLM-L6-v2
+      - LLM_PROVIDER=stub
     volumes:
       - ./backend:/app
       - ./chroma_db:/data/chroma
