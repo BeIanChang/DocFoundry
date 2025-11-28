@@ -5,12 +5,13 @@ from datetime import datetime, timedelta, timezone
 from typing import Dict, Optional
 
 import jwt
-from fastapi import APIRouter, HTTPException, Header
+from fastapi import APIRouter, HTTPException, Header, Depends
+from sqlalchemy.orm import Session
 
-router = APIRouter(prefix="/auth", tags=["auth (dev JWT)"])
+from app.db.session import get_session
+from app.db import models
 
-# in-memory user store for dev only (email -> {id, email, name, password_hash})
-_users: Dict[str, Dict] = {}
+router = APIRouter(prefix="/auth", tags=["auth (dev JWT, DB-backed)"])
 
 JWT_SECRET = os.environ.get("JWT_SECRET", "dev-secret-change-me")
 JWT_ALG = "HS256"
@@ -43,9 +44,9 @@ def _decode_token(token: str) -> Dict:
 
 
 @router.post("/register")
-def register(payload: Dict):
+def register(payload: Dict, db: Session = Depends(get_session)):
     """
-    Dev-only registration issuing a JWT.
+    Dev registration issuing a JWT and persisting user to DB.
     body: {"email": "...", "password": "...", "name": "..."}
     """
     email = (payload.get("email") or "").strip().lower()
@@ -53,34 +54,37 @@ def register(payload: Dict):
     name = payload.get("name") or ""
     if not email or not password:
         raise HTTPException(status_code=400, detail="email and password are required")
-    if email in _users:
+    existing = db.query(models.User).filter(models.User.email == email).first()
+    if existing:
         raise HTTPException(status_code=400, detail="user already exists")
-    user = {
-        "id": str(uuid.uuid4()),
-        "email": email,
-        "name": name,
-        "password_hash": _hash_password(password),
-    }
-    _users[email] = user
-    token = _issue_token(user)
-    return {"token": token, "user": {"id": user["id"], "email": email, "name": name}}
+    user = models.User(
+        id=str(uuid.uuid4()),
+        email=email,
+        name=name,
+        password_hash=_hash_password(password),
+    )
+    db.add(user)
+    db.commit()
+    db.refresh(user)
+    token = _issue_token({"id": user.id, "email": user.email, "name": user.name})
+    return {"token": token, "user": {"id": user.id, "email": email, "name": name}}
 
 
 @router.post("/login")
-def login(payload: Dict):
+def login(payload: Dict, db: Session = Depends(get_session)):
     email = (payload.get("email") or "").strip().lower()
     password = payload.get("password") or ""
-    user = _users.get(email)
-    if not user or user["password_hash"] != _hash_password(password):
+    user = db.query(models.User).filter(models.User.email == email).first()
+    if not user or user.password_hash != _hash_password(password):
         raise HTTPException(status_code=401, detail="invalid credentials")
-    token = _issue_token(user)
-    return {"token": token, "user": {"id": user["id"], "email": email, "name": user["name"]}}
+    token = _issue_token({"id": user.id, "email": user.email, "name": user.name})
+    return {"token": token, "user": {"id": user.id, "email": user.email, "name": user.name}}
 
 
-def get_current_user(authorization: Optional[str] = Header(default=None)):
+def get_current_user(authorization: Optional[str] = Header(default=None), db: Session = Depends(get_session)):
     """
-    Dev-only bearer token checker. Expects: Authorization: Bearer <token>
-    JWT carries user id/email; we return a dict with those claims.
+    Bearer token checker. Expects: Authorization: Bearer <token>
+    Returns DB user or 401.
     """
     if not authorization:
         raise HTTPException(status_code=401, detail="missing authorization header")
@@ -89,10 +93,7 @@ def get_current_user(authorization: Optional[str] = Header(default=None)):
         raise HTTPException(status_code=401, detail="invalid authorization format")
     token = parts[1]
     claims = _decode_token(token)
-    # prefer stored user if present; otherwise use claims
-    user = _users.get(claims.get("email")) or {
-        "id": claims.get("sub"),
-        "email": claims.get("email"),
-        "name": claims.get("name"),
-    }
-    return user
+    user = db.get(models.User, claims.get("sub"))
+    if not user or not user.is_active:
+        raise HTTPException(status_code=401, detail="user not found or inactive")
+    return {"id": user.id, "email": user.email, "name": user.name}

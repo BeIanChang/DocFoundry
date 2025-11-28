@@ -31,9 +31,9 @@ See subfolders for instructions.
 
 ## Stub auth (dev only)
 - Now uses JWT (HS256) with dev defaults. Env: `JWT_SECRET`, `JWT_EXP_MINUTES` (see docker-compose).
-- `POST /auth/register` with `{"email": "...", "password": "...", "name": "..."}` returns a JWT.
-- `POST /auth/login` returns a JWT.
-- Include `Authorization: Bearer <token>` on requests that need user context (in dev the user store is in-memory; tokens remain valid across server restarts as long as `JWT_SECRET` stays the same).
+- `POST /auth/register` with `{"email": "...", "password": "...", "name": "..."}` returns a JWT and creates a DB user.
+- `POST /auth/login` returns a JWT (validated against DB user + password_hash).
+- Include `Authorization: Bearer <token>` on requests that need user context.
 
 ## New endpoints (Milestone 4 beginnings)
 - Projects: `POST /projects`, `GET /projects`, `GET /projects/{id}`, `PUT /projects/{id}`, `DELETE /projects/{id}`. KB creation now validates `project_id` if supplied.

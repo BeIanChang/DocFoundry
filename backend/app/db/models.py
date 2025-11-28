@@ -23,6 +23,7 @@ class User(Base):
     id = Column(String(36), primary_key=True, default=gen_uuid)
     email = Column(String(255), unique=True, nullable=False)
     name = Column(String(255))
+    password_hash = Column(String(255))
     is_active = Column(Boolean, default=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 

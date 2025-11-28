@@ -26,8 +26,7 @@ def create_session(payload: dict, db=Depends(get_session), user=Depends(get_curr
         kb = db.get(models.KnowledgeBase, kb_id)
         if not kb:
             raise HTTPException(status_code=404, detail="knowledge base not found")
-    # user_id is nullable in the schema; avoid FK issues with in-memory auth users
-    session = models.ChatSession(user_id=None, kb_id=kb_id, meta=payload.get("meta"))
+    session = models.ChatSession(user_id=user["id"], kb_id=kb_id, meta=payload.get("meta"))
     db.add(session)
     db.commit()
     db.refresh(session)
