@@ -31,11 +31,18 @@ def add_documents(docs: List[Dict]):
 def query_documents(query: str, n_results: int = 5, kb_id: Optional[str] = None, document_id: Optional[str] = None):
     """Return top matches; optionally filter by kb_id and/or document_id."""
     emb = EMBED_MODEL.encode([query]).tolist()[0]
-    where = {}
+    filters = []
     if kb_id:
-        where["kb_id"] = kb_id
+        filters.append({"kb_id": kb_id})
     if document_id:
-        where["document_id"] = document_id
-    results = collection.query(query_embeddings=[emb], n_results=n_results, where=where or None)
+        filters.append({"document_id": document_id})
+    # Chroma (new API) expects a single logical operator; use $and when multiple filters
+    where = None
+    if len(filters) == 1:
+        where = filters[0]
+    elif len(filters) > 1:
+        where = {"$and": filters}
+
+    results = collection.query(query_embeddings=[emb], n_results=n_results, where=where)
     # results is a dict with ids/documents/scores/metadatas
     return results

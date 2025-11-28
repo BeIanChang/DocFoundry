@@ -11,6 +11,10 @@ services:
       - LLM_PROVIDER=stub
       - JWT_SECRET=dev-secret-change-me
       - JWT_EXP_MINUTES=120
+      # optional: Cerebras LLM
+      # - LLM_PROVIDER=cerebras
+      # - CEREBRAS_API_KEY=your_key_here
+      # - CEREBRAS_MODEL=llama3.1-8b-instruct
     volumes:
       - ./backend:/app
       - ./chroma_db:/data/chroma

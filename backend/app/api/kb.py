@@ -11,6 +11,11 @@ router = APIRouter(prefix="/kb", tags=["knowledge_bases"])
 
 @router.post("/", response_model=KnowledgeBaseRead)
 def create_kb(payload: KnowledgeBaseCreate, db: Session = Depends(get_session)):
+    # validate project_id if provided
+    if payload.project_id:
+        proj = db.get(models.Project, payload.project_id)
+        if not proj:
+            raise HTTPException(status_code=404, detail="project not found")
     try:
         kb = models.KnowledgeBase(
             project_id=payload.project_id,

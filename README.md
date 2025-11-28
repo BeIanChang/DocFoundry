@@ -34,3 +34,11 @@ See subfolders for instructions.
 - `POST /auth/register` with `{"email": "...", "password": "...", "name": "..."}` returns a JWT.
 - `POST /auth/login` returns a JWT.
 - Include `Authorization: Bearer <token>` on requests that need user context (in dev the user store is in-memory; tokens remain valid across server restarts as long as `JWT_SECRET` stays the same).
+
+## New endpoints (Milestone 4 beginnings)
+- Projects: `POST /projects`, `GET /projects`, `GET /projects/{id}`, `PUT /projects/{id}`, `DELETE /projects/{id}`. KB creation now validates `project_id` if supplied.
+- Chat: `POST /chat/sessions` (optional `kb_id`, requires `Authorization: Bearer <token>`), `GET /chat/sessions`, `POST /chat/sessions/{id}/messages` (uses RAG under the hood and stores Q/A in `chat_messages`).
+
+## LLM provider options
+- Default: `LLM_PROVIDER=stub` (no external calls).
+- Cerebras (OpenAI-compatible): set `LLM_PROVIDER=cerebras`, `CEREBRAS_API_KEY=<key>`, optional `CEREBRAS_MODEL` (default `llama3.1-8b-instruct`). Endpoint: `https://api.cerebras.ai/v1/chat/completions`.

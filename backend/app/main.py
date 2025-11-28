@@ -23,11 +23,15 @@ from app.api.kb import router as kb_router
 from app.api.documents import router as documents_router
 from app.api.rag import router as rag_router
 from app.api.auth import router as auth_router
+from app.api.projects import router as projects_router
+from app.api.chat import router as chat_router
 
 app.include_router(kb_router)
 app.include_router(documents_router)
 app.include_router(rag_router)
 app.include_router(auth_router)
+app.include_router(projects_router)
+app.include_router(chat_router)
 
 @app.get("/health")
 def health():
