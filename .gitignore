@@ -4,3 +4,4 @@ node_modules/
 .chroma/
 chroma_db/
 .env
+/APIKEY

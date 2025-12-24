@@ -7,6 +7,7 @@ from app.db import models
 from app.schemas import DocumentCreate, DocumentRead, DocumentUpdate
 from app.parsers.chunker import chunk_text
 from app.embeddings import vector_store
+from app.agent.profiling import generate_document_profile
 
 router = APIRouter(prefix="/documents", tags=["documents"])
 
@@ -163,4 +164,77 @@ async def upload_document_file(doc_id: str, file: UploadFile = File(...), db: Se
         # embeddings are optional in dev; ignore failures
         pass
 
+    # generate a lightweight searchable profile for this version
+    try:
+        prof = generate_document_profile(title=doc.title or "", file_name=file.filename, text=text)
+        db.add(
+            models.DocumentProfile(
+                document_id=doc.id,
+                version_id=version.id,
+                title=doc.title,
+                file_name=file.filename,
+                doc_type=prof.doc_type,
+                year_start=prof.year_start,
+                year_end=prof.year_end,
+                summary=prof.summary,
+                tags=prof.tags,
+                meta=prof.meta,
+            )
+        )
+        db.commit()
+    except Exception:
+        # profiling is best-effort in dev
+        pass
+
     return {"version_id": version.id, "chunks_created": len(chunks)}
+
+
+@router.get("/{doc_id}/profile")
+def get_document_profile(doc_id: str, db: Session = Depends(get_session)):
+    """Return the latest profile for the document (if available)."""
+    doc = db.get(models.Document, doc_id)
+    if not doc:
+        raise HTTPException(status_code=404, detail="document not found")
+
+    ver = (
+        db.query(models.DocumentVersion)
+        .filter(models.DocumentVersion.document_id == doc_id)
+        .order_by(models.DocumentVersion.version_number.desc())
+        .first()
+    )
+    if not ver:
+        raise HTTPException(status_code=404, detail="document has no versions")
+
+    profile = (
+        db.query(models.DocumentProfile)
+        .filter(models.DocumentProfile.version_id == ver.id)
+        .order_by(models.DocumentProfile.created_at.desc())
+        .first()
+    )
+    if not profile:
+        return {
+            "document_id": doc_id,
+            "version_id": ver.id,
+            "title": doc.title,
+            "file_name": ver.file_name,
+            "doc_type": None,
+            "year_start": None,
+            "year_end": None,
+            "summary": None,
+            "tags": [],
+            "meta": {"status": "missing"},
+        }
+
+    return {
+        "document_id": profile.document_id,
+        "version_id": profile.version_id,
+        "title": profile.title,
+        "file_name": profile.file_name,
+        "doc_type": profile.doc_type,
+        "year_start": profile.year_start,
+        "year_end": profile.year_end,
+        "summary": profile.summary,
+        "tags": profile.tags or [],
+        "meta": profile.meta or {},
+        "created_at": profile.created_at.isoformat() if profile.created_at else None,
+    }

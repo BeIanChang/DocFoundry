@@ -1,0 +1,12 @@
+/Users/ian/Documents/Projects/DocFoundry/backend/.venv/lib/python3.9/site-packages/urllib3/__init__.py:35: NotOpenSSLWarning: urllib3 v2 only supports OpenSSL 1.1.1+, currently the 'ssl' module is compiled with 'LibreSSL 2.8.3'. See: https://github.com/urllib3/urllib3/issues/3020
+  warnings.warn(
+INFO:     Started server process [89528]
+INFO:     Waiting for application startup.
+INFO  [alembic.runtime.migration] Context impl SQLiteImpl.
+INFO  [alembic.runtime.migration] Will assume non-transactional DDL.
+INFO  [alembic.runtime.migration] Running upgrade 0001_initial -> 0002_add_pw_hash, add password_hash to users
+ERROR [chromadb.telemetry.posthog] Failed to send telemetry event client_start: capture() takes 1 positional argument but 3 were given
+ERROR [chromadb.telemetry.posthog] Failed to send telemetry event collection_add: capture() takes 1 positional argument but 3 were given
+ERROR [chromadb.telemetry.posthog] Failed to send telemetry event collection_add: capture() takes 1 positional argument but 3 were given
+ERROR [chromadb.telemetry.posthog] Failed to send telemetry event collection_add: capture() takes 1 positional argument but 3 were given
+ERROR [chromadb.telemetry.posthog] Failed to send telemetry event collection_add: capture() takes 1 positional argument but 3 were given

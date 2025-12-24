@@ -3,17 +3,42 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 import tempfile
 import os
+from dotenv import load_dotenv
+from pathlib import Path
 # import parsers lazily (parsing libs are optional in dev image)
 from app.db.session import get_engine
 from app.db import models as models
+
+load_dotenv()
 
 app = FastAPI(title="DocFoundry")
 
 
 @app.on_event("startup")
 def startup_db():
-    # create tables if they don't exist
+    """
+    Dev-friendly DB init:
+    - Prefer Alembic migrations when available (keeps existing SQLite DBs in sync).
+    - Fall back to `create_all` if migrations can't run.
+    """
     engine = get_engine()
+    database_url = os.environ.get("DATABASE_URL") or "sqlite:///./docfoundry.db"
+
+    try:
+        from alembic import command
+        from alembic.config import Config
+
+        backend_dir = Path(__file__).resolve().parents[1]
+        alembic_ini = backend_dir / "alembic.ini"
+        alembic_dir = backend_dir / "alembic"
+        cfg = Config(str(alembic_ini))
+        cfg.set_main_option("script_location", str(alembic_dir))
+        cfg.set_main_option("sqlalchemy.url", database_url)
+        command.upgrade(cfg, "head")
+    except Exception:
+        pass
+
+    # Ensure any new tables (not yet in migrations) exist in dev.
     models.Base.metadata.create_all(bind=engine)
 
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
@@ -25,6 +50,7 @@ from app.api.rag import router as rag_router
 from app.api.auth import router as auth_router
 from app.api.projects import router as projects_router
 from app.api.chat import router as chat_router
+from app.agent.router import router as agent_router
 
 app.include_router(kb_router)
 app.include_router(documents_router)
@@ -32,6 +58,7 @@ app.include_router(rag_router)
 app.include_router(auth_router)
 app.include_router(projects_router)
 app.include_router(chat_router)
+app.include_router(agent_router)
 
 @app.get("/health")
 def health():

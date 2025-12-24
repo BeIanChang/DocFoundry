@@ -77,6 +77,7 @@ class DocumentVersion(Base):
     uploaded_at = Column(DateTime(timezone=True), server_default=func.now())
     document = relationship('Document', back_populates='versions')
     chunks = relationship('Chunk', back_populates='version')
+    profiles = relationship('DocumentProfile', back_populates='version')
 
 
 class Chunk(Base):
@@ -88,6 +89,25 @@ class Chunk(Base):
     end_pos = Column(Integer)
     meta = Column(JSON)
     version = relationship('DocumentVersion', back_populates='chunks')
+
+
+class DocumentProfile(Base):
+    __tablename__ = "document_profiles"
+    id = Column(String(36), primary_key=True, default=gen_uuid)
+    document_id = Column(String(36), ForeignKey("documents.id"), nullable=False)
+    version_id = Column(String(36), ForeignKey("document_versions.id"), nullable=False)
+    title = Column(String(1024))
+    file_name = Column(String(1024))
+    doc_type = Column(String(128))
+    year_start = Column(Integer)
+    year_end = Column(Integer)
+    summary = Column(Text)
+    tags = Column(JSON)
+    meta = Column(JSON)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    document = relationship("Document")
+    version = relationship("DocumentVersion", back_populates="profiles")
 
 
 class ChatSession(Base):
@@ -158,3 +178,31 @@ class IngestionItem(Base):
     status = Column(String(64), default='pending')
     detail = Column(JSON)
     job = relationship('IngestionJob', back_populates='items')
+
+
+class AgentRun(Base):
+    __tablename__ = "agent_runs"
+    id = Column(String(36), primary_key=True, default=gen_uuid)
+    user_id = Column(String(36), ForeignKey("users.id"), nullable=True)
+    message = Column(Text, nullable=False)
+    scope = Column(JSON)
+    mode = Column(String(64), default="auto")
+    status = Column(String(64), default="running")
+    final_answer = Column(Text)
+    provider = Column(String(64))
+    model = Column(String(255))
+    citations = Column(JSON)
+    error = Column(Text)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    steps = relationship("AgentStep", back_populates="run")
+
+
+class AgentStep(Base):
+    __tablename__ = "agent_steps"
+    id = Column(String(36), primary_key=True, default=gen_uuid)
+    run_id = Column(String(36), ForeignKey("agent_runs.id"), nullable=False)
+    idx = Column(Integer, default=0)
+    kind = Column(String(64))
+    payload = Column(JSON)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    run = relationship("AgentRun", back_populates="steps")
