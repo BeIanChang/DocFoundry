@@ -8,6 +8,9 @@ from app.schemas import DocumentCreate, DocumentRead, DocumentUpdate
 from app.parsers.chunker import chunk_text
 from app.embeddings import vector_store
 from app.agent.profiling import generate_document_profile
+from pathlib import Path
+import os
+import shutil
 
 router = APIRouter(prefix="/documents", tags=["documents"])
 
@@ -99,9 +102,42 @@ def delete_document(doc_id: str, db: Session = Depends(get_session)):
     doc = db.get(models.Document, doc_id)
     if not doc:
         raise HTTPException(status_code=404, detail="document not found")
+
+    # gather versions and chunk ids for vector cleanup
+    versions = db.query(models.DocumentVersion).filter(models.DocumentVersion.document_id == doc_id).all()
+    version_ids = [v.id for v in versions]
+    chunk_ids: List[str] = []
+    if version_ids:
+        chunk_ids = [c[0] for c in db.query(models.Chunk.id).filter(models.Chunk.version_id.in_(version_ids)).all()]
+
+    # delete vectors (best-effort)
+    try:
+        vector_store.delete_documents(chunk_ids)
+    except Exception:
+        pass
+
+    # delete raw files (best-effort)
+    try:
+        base = Path(os.environ.get("UPLOAD_DIR", "./uploads")).resolve()
+        doc_dir = (base / doc.id).resolve()
+        if str(doc_dir).startswith(str(base)) and doc_dir.exists():
+            shutil.rmtree(doc_dir, ignore_errors=True)
+    except Exception:
+        pass
+
+    # delete DB rows (manual cascade)
+    if version_ids:
+        db.query(models.DocumentVersionText).filter(models.DocumentVersionText.version_id.in_(version_ids)).delete(synchronize_session=False)
+        db.query(models.DocumentProfile).filter(models.DocumentProfile.version_id.in_(version_ids)).delete(synchronize_session=False)
+        db.query(models.Chunk).filter(models.Chunk.version_id.in_(version_ids)).delete(synchronize_session=False)
+        db.query(models.DocumentVersion).filter(models.DocumentVersion.id.in_(version_ids)).delete(synchronize_session=False)
+    else:
+        db.query(models.DocumentProfile).filter(models.DocumentProfile.document_id == doc_id).delete(synchronize_session=False)
+        db.query(models.DocumentVersionText).filter(models.DocumentVersionText.document_id == doc_id).delete(synchronize_session=False)
+
     db.delete(doc)
     db.commit()
-    return {"status": "deleted"}
+    return {"status": "deleted", "document_id": doc_id, "versions_deleted": len(version_ids), "chunks_deleted": len(chunk_ids)}
 
 
 @router.post("/{doc_id}/upload")
@@ -130,6 +166,27 @@ async def upload_document_file(doc_id: str, file: UploadFile = File(...), db: Se
     db.add(version)
     db.commit()
     db.refresh(version)
+
+    # persist raw file for "document manager" UI
+    try:
+        base = Path(os.environ.get("UPLOAD_DIR", "./uploads"))
+        target_dir = (base / doc.id / version.id).resolve()
+        target_dir.mkdir(parents=True, exist_ok=True)
+        safe_name = Path(file.filename).name
+        raw_path = target_dir / safe_name
+        raw_path.write_bytes(data)
+        version.file_path = str(raw_path)
+        db.add(version)
+        db.commit()
+    except Exception:
+        pass
+
+    # persist full parsed text for viewer
+    try:
+        db.add(models.DocumentVersionText(version_id=version.id, document_id=doc.id, text=text))
+        db.commit()
+    except Exception:
+        pass
 
     # chunk and store
     chunks = chunk_text(text)

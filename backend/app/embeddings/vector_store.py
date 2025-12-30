@@ -131,3 +131,12 @@ def embedder_info() -> Dict[str, Optional[str]]:
         "provider": EMBED_PROVIDER,
         "model": EMBED_MODEL_NAME if _embedder_kind == "sentence-transformers" else None,
     }
+
+
+def delete_documents(ids: List[str]) -> int:
+    """Best-effort delete by IDs from Chroma."""
+    if not ids:
+        return 0
+    collection = _get_collection()
+    collection.delete(ids=ids)
+    return len(ids)

@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 
 from app.agent.schemas import AgentCitation, AgentQueryRequest, AgentQueryResponse
 from app.agent.tools import AnswerTool, VectorSearchTool
+from app.agent.planner import plan_next_step
 from app.db import models
 from app.embeddings.llm import chat
 
@@ -56,131 +57,128 @@ class AgentOrchestrator:
         steps_out: List[Dict[str, Any]] = []
         self._add_step(db, run_id=run.id, idx=0, kind="interpret", payload={"scope": scope.to_json(), "mode": req.mode})
 
-        intent = self._detect_intent(req.message)
-        if intent == "list_documents":
-            answer_text, citations = self._answer_list_documents(req.message, scope=scope, db=db)
-            self._add_step(
-                db,
-                run_id=run.id,
-                idx=1,
-                kind="tool_call",
-                payload={"tool": "list_documents", "input": {"scope": scope.to_json()}, "output": {"count": len(citations)}},
-            )
-            self._add_step(
-                db,
-                run_id=run.id,
-                idx=2,
-                kind="synthesize",
-                payload={"provider": "db", "model": None, "answer_preview": _preview(answer_text, 320), "citations": len(citations)},
-            )
-            verified, verify_note = self._verify(answer_text, citations)
-            self._add_step(db, run_id=run.id, idx=3, kind="verify", payload={"ok": verified, "note": verify_note})
+        # Agent loop state
+        observations: List[Dict[str, Any]] = []
+        routed_doc_ids: List[str] = []
+        last_contexts = []
+        citations: List[AgentCitation] = []
+        provider: Optional[str] = None
+        model: Optional[str] = None
+        answer_text: str = ""
 
-            run.status = "completed" if verified else "needs_review"
-            run.final_answer = answer_text
-            run.provider = "db"
-            run.model = None
-            run.citations = [c.dict() for c in citations]
-            db.add(run)
-            db.commit()
-
-            if req.return_steps:
-                steps_out = self._read_steps(db, run_id=run.id)
-
-            return AgentQueryResponse(
-                run_id=run.id,
-                answer=answer_text,
-                provider="db",
-                model=None,
-                citations=citations,
-                steps=steps_out if req.return_steps else None,
-            )
-
-        # If user scoped to a KB but not a specific document, try selecting relevant documents
-        selected_doc_ids: List[str] = []
-        if scope.kb_id and not scope.document_id:
-            selected_doc_ids = self._route_documents(req.message, kb_id=scope.kb_id, db=db)
-            self._add_step(
-                db,
-                run_id=run.id,
-                idx=1,
-                kind="tool_call",
-                payload={
-                    "tool": "document_router",
-                    "input": {"query": req.message, "kb_id": scope.kb_id},
-                    "output": {"selected_document_ids": selected_doc_ids, "count": len(selected_doc_ids)},
-                },
-            )
-        else:
-            self._add_step(
-                db,
-                run_id=run.id,
-                idx=1,
-                kind="tool_call",
-                payload={
-                    "tool": "document_router",
-                    "input": {"query": req.message, "kb_id": scope.kb_id, "document_id": scope.document_id},
-                    "output": {"skipped": True},
-                },
-            )
-
+        max_steps = max(1, int(req.max_steps or 20))
         top_k = max(1, int(req.top_k or 5))
-        contexts = self._retrieve(req.message, top_k=top_k, kb_id=scope.kb_id, document_id=scope.document_id, routed_doc_ids=selected_doc_ids)
-        self._add_step(
-            db,
-            run_id=run.id,
-            idx=2,
-            kind="tool_call",
-            payload={
-                "tool": "vector_search",
-                "input": {
-                    "query": req.message,
-                    "top_k": top_k,
-                    "kb_id": scope.kb_id,
-                    "document_id": scope.document_id,
-                    "routed_document_ids": selected_doc_ids or None,
-                },
-                "output": {"matches": len(contexts), "top": [{"chunk_id": c.chunk_id, "score": c.score} for c in contexts[:5]]},
-            },
-        )
 
-        citations = [
-            AgentCitation(
-                chunk_id=c.chunk_id,
-                score=c.score,
-                metadata=c.metadata or {},
-                text_preview=_preview(c.text),
+        for i in range(1, max_steps + 1):
+            plan = plan_next_step(
+                user_message=req.message,
+                scope=scope.to_json(),
+                observations=observations,
+                max_doc_picks=5,
+                top_k=top_k,
             )
-            for c in contexts
-        ]
+            self._add_step(
+                db,
+                run_id=run.id,
+                idx=i,
+                kind="plan",
+                payload={"action": plan.action, "args": plan.args, "rationale": plan.rationale},
+            )
 
-        if not contexts:
+            action = plan.action
+
+            if action == "final":
+                answer_text = plan.args.get("answer") or "OK."
+                provider = "planner"
+                model = None
+                citations = [AgentCitation(chunk_id=None, metadata={"source": "planner", "kind": "final"})]
+                break
+
+            if action == "list_documents":
+                answer_text, citations = self._answer_list_documents(req.message, scope=scope, db=db)
+                provider = "db"
+                model = None
+                observations.append({"tool": "list_documents", "count": len(citations)})
+                break
+
+            if action == "get_document_profile":
+                # Force profile view for selected doc; if none selected, fall back to listing
+                if scope.document_id:
+                    answer_text, citations = self._answer_list_documents(req.message, scope=scope, db=db)
+                else:
+                    answer_text, citations = self._answer_list_documents(req.message, scope=scope, db=db)
+                provider = "db"
+                model = None
+                observations.append({"tool": "get_document_profile"})
+                break
+
+            if action == "route_documents":
+                if scope.document_id:
+                    observations.append({"tool": "route_documents", "skipped": True, "reason": "document_id is set"})
+                    continue
+                if not scope.kb_id:
+                    observations.append({"tool": "route_documents", "skipped": True, "reason": "kb_id is missing"})
+                    continue
+                routed_doc_ids = self._route_documents(req.message, kb_id=scope.kb_id, db=db)
+                observations.append({"tool": "route_documents", "picked": routed_doc_ids})
+                continue
+
+            if action == "vector_search":
+                q = plan.args.get("query") or req.message
+                doc_id = scope.document_id
+                if not doc_id and plan.args.get("document_id"):
+                    # Only allow explicit document_id selection when kb scope exists
+                    doc_id = str(plan.args.get("document_id"))
+                    if scope.kb_id:
+                        doc = db.get(models.Document, doc_id)
+                        if not doc or (doc.kb_id and doc.kb_id != scope.kb_id):
+                            observations.append({"tool": "vector_search", "error": "document_id not in kb scope"})
+                            continue
+                    else:
+                        observations.append({"tool": "vector_search", "error": "missing kb_id for document filter"})
+                        continue
+
+                last_contexts = self._retrieve(q, top_k=top_k, kb_id=scope.kb_id, document_id=doc_id, routed_doc_ids=routed_doc_ids)
+                citations = [
+                    AgentCitation(chunk_id=c.chunk_id, score=c.score, metadata=c.metadata or {}, text_preview=_preview(c.text))
+                    for c in last_contexts
+                ]
+                observations.append({"tool": "vector_search", "matches": len(last_contexts), "top": [{"chunk_id": c.chunk_id, "score": c.score} for c in last_contexts[:5]]})
+                continue
+
+            if action == "answer_with_context":
+                if not last_contexts:
+                    observations.append({"tool": "answer_with_context", "error": "no_contexts"})
+                    continue
+                llm_contexts = [{"chunk_id": c.chunk_id, "text": c.text, "score": c.score, "metadata": c.metadata or {}} for c in last_contexts[:top_k]]
+                llm_resp = self.answer_tool.answer(req.message, llm_contexts)
+                answer_text = llm_resp.get("answer") or ""
+                provider = llm_resp.get("provider")
+                model = llm_resp.get("model")
+                observations.append({"tool": "answer_with_context", "provider": provider, "model": model})
+                break
+
+            observations.append({"tool": "unknown", "action": action})
+
+        if not answer_text:
             answer_text = (
-                "I couldn't find any matching chunks for your request in the current scope. "
-                "Try uploading relevant documents, increasing `top_k`, or widening the scope."
+                "I couldn't complete the request within the step limit. "
+                "Try increasing `max_steps`, widening scope, or asking a more specific question."
             )
-            provider = None
-            model = None
-        else:
-            llm_contexts = [
-                {"chunk_id": c.chunk_id, "text": c.text, "score": c.score, "metadata": c.metadata or {}}
-                for c in contexts[: max(1, int(req.top_k or 5))]
-            ]
-            llm_resp = self.answer_tool.answer(req.message, llm_contexts)
-            answer_text = llm_resp.get("answer") or ""
-            provider = llm_resp.get("provider")
-            model = llm_resp.get("model")
+            provider = provider or "planner"
+            model = model or None
+            if not citations:
+                citations = [AgentCitation(chunk_id=None, metadata={"source": "planner", "kind": "step_limit"})]
 
+        # final verification
+        verified, verify_note = self._verify(answer_text, citations)
         self._add_step(
             db,
             run_id=run.id,
-            idx=3,
-            kind="synthesize",
-            payload={"provider": provider, "model": model, "answer_preview": _preview(answer_text, 320), "citations": len(citations)},
+            idx=max_steps + 2,
+            kind="verify",
+            payload={"ok": verified, "note": verify_note, "final_provider": provider, "final_model": model},
         )
-
-        verified, verify_note = self._verify(answer_text, citations)
-        self._add_step(db, run_id=run.id, idx=4, kind="verify", payload={"ok": verified, "note": verify_note})
 
         run.status = "completed" if verified else "needs_review"
         run.final_answer = answer_text

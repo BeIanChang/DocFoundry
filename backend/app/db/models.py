@@ -78,6 +78,7 @@ class DocumentVersion(Base):
     document = relationship('Document', back_populates='versions')
     chunks = relationship('Chunk', back_populates='version')
     profiles = relationship('DocumentProfile', back_populates='version')
+    parsed_text = relationship('DocumentVersionText', back_populates='version')
 
 
 class Chunk(Base):
@@ -108,6 +109,18 @@ class DocumentProfile(Base):
 
     document = relationship("Document")
     version = relationship("DocumentVersion", back_populates="profiles")
+
+
+class DocumentVersionText(Base):
+    __tablename__ = "document_version_texts"
+    id = Column(String(36), primary_key=True, default=gen_uuid)
+    version_id = Column(String(36), ForeignKey("document_versions.id"), nullable=False, unique=True)
+    document_id = Column(String(36), ForeignKey("documents.id"), nullable=False)
+    text = Column(Text)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    version = relationship("DocumentVersion", back_populates="parsed_text")
+    document = relationship("Document")
 
 
 class ChatSession(Base):

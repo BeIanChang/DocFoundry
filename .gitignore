@@ -5,3 +5,5 @@ node_modules/
 chroma_db/
 .env
 /APIKEY
+/develop_note.md
+/.DS_Store

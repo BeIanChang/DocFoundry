@@ -2,7 +2,7 @@
   "/_app": "pages/_app.js",
   "/_error": "pages/_error.js",
   "/_document": "pages/_document.js",
-  "/": "pages/index.js",
-  "/upload": "pages/upload.js",
-  "/chat": "pages/chat.js"
+  "/library": "pages/library.js",
+  "/chat": "pages/chat.js",
+  "/upload": "pages/upload.js"
 }

@@ -1,4 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
+import Layout from "../components/Layout";
+import { getApiBase, getToken, setApiBase } from "../components/auth";
 
 function pretty(obj) {
   try {
@@ -29,26 +31,8 @@ async function apiFetch(base, path, { method = "GET", token, body, isForm } = {}
   return data;
 }
 
-function Nav() {
-  return (
-    <div style={{ display: "flex", gap: 12, alignItems: "center" }}>
-      <a href="/" style={{ fontWeight: 700, color: "#111", textDecoration: "none" }}>
-        DocFoundry
-      </a>
-      <a href="/chat">Chat</a>
-      <a href="/upload">Upload</a>
-    </div>
-  );
-}
-
 export default function UploadPage() {
-  const [apiBase, setApiBase] = useState("http://localhost:8000");
-  const [token, setToken] = useState("");
-  const authHeaderPreview = useMemo(() => (token ? `Bearer ${token.slice(0, 16)}…` : "(none)"), [token]);
-
-  const [email, setEmail] = useState("test@example.com");
-  const [password, setPassword] = useState("test123");
-  const [name, setName] = useState("Test");
+  const [apiBase, setApiBaseState] = useState("http://localhost:8000");
 
   const [projects, setProjects] = useState([]);
   const [kbs, setKbs] = useState([]);
@@ -69,26 +53,15 @@ export default function UploadPage() {
   const [output, setOutput] = useState(null);
 
   useEffect(() => {
-    const saved = window.localStorage.getItem("docfoundry_token");
-    if (saved) setToken(saved);
+    setApiBaseState(getApiBase());
+    const sync = () => setApiBaseState(getApiBase());
+    window.addEventListener("docfoundry_api_base_change", sync);
+    window.addEventListener("storage", sync);
+    return () => {
+      window.removeEventListener("docfoundry_api_base_change", sync);
+      window.removeEventListener("storage", sync);
+    };
   }, []);
-
-  useEffect(() => {
-    if (token) window.localStorage.setItem("docfoundry_token", token);
-    else window.localStorage.removeItem("docfoundry_token");
-  }, [token]);
-
-  const authRegister = async () => {
-    const data = await apiFetch(apiBase, "/auth/register", { method: "POST", body: { email, password, name } });
-    setToken(data.token || "");
-    return data;
-  };
-
-  const authLogin = async () => {
-    const data = await apiFetch(apiBase, "/auth/login", { method: "POST", body: { email, password } });
-    setToken(data.token || "");
-    return data;
-  };
 
   const refreshProjects = async () => {
     const data = await apiFetch(apiBase, "/projects/");
@@ -131,73 +104,54 @@ export default function UploadPage() {
   };
 
   return (
-    <div style={{ padding: 18, fontFamily: "system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif", maxWidth: 980, margin: "0 auto" }}>
-      <Nav />
-
-      <h1 style={{ marginTop: 16, marginBottom: 6 }}>Upload</h1>
-      <p style={{ marginTop: 0, color: "#444" }}>Create Project/KB/Document, then upload a file to create chunks + a document profile.</p>
-
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
-        <section style={{ border: "1px solid #eee", borderRadius: 10, padding: 14 }}>
-          <h2 style={{ marginTop: 0 }}>Backend + Auth</h2>
-          <label style={{ display: "block", fontSize: 12, color: "#555" }}>
-            API base
-            <input value={apiBase} onChange={(e) => setApiBase(e.target.value)} style={{ width: "100%", marginTop: 6, padding: 8 }} />
-          </label>
-          <div style={{ fontSize: 12, color: "#666", marginTop: 8 }}>Authorization: {authHeaderPreview}</div>
-
-          <div style={{ display: "grid", gap: 8, marginTop: 10 }}>
-            <label style={{ fontSize: 12, color: "#555" }}>
-              Email
-              <input value={email} onChange={(e) => setEmail(e.target.value)} style={{ width: "100%", marginTop: 6, padding: 8 }} />
-            </label>
-            <label style={{ fontSize: 12, color: "#555" }}>
-              Password
-              <input value={password} onChange={(e) => setPassword(e.target.value)} type="password" style={{ width: "100%", marginTop: 6, padding: 8 }} />
-            </label>
-            <label style={{ fontSize: 12, color: "#555" }}>
-              Name (register)
-              <input value={name} onChange={(e) => setName(e.target.value)} style={{ width: "100%", marginTop: 6, padding: 8 }} />
-            </label>
-            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-              <button disabled={busy} onClick={() => run(authLogin)}>Login</button>
-              <button disabled={busy} onClick={() => run(authRegister)}>Register</button>
-              <button disabled={busy} onClick={() => setToken("")}>
-                Clear token
-              </button>
-            </div>
+    <Layout title="Upload" subtitle="Create Project/KB/Document, then upload a file to generate chunks + a document profile.">
+      <div className="grid2">
+        <section className="card" style={{ padding: 16 }}>
+          <h2 style={{ marginTop: 0 }}>Backend</h2>
+          <label className="fieldLabel">API base</label>
+          <input
+            className="field"
+            value={apiBase}
+            onChange={(e) => {
+              setApiBaseState(e.target.value);
+              setApiBase(e.target.value);
+            }}
+          />
+          <div className="muted" style={{ fontSize: 12, marginTop: 10, lineHeight: 1.4 }}>
+            Upload endpoints are open in dev. Agent/chat requires auth via the top-right Account menu.
           </div>
         </section>
 
-        <section style={{ border: "1px solid #eee", borderRadius: 10, padding: 14 }}>
+        <section className="card" style={{ padding: 16 }}>
           <h2 style={{ marginTop: 0 }}>Create</h2>
 
-          <div style={{ display: "grid", gap: 10 }}>
-            <div style={{ display: "flex", gap: 8, alignItems: "flex-end", flexWrap: "wrap" }}>
-              <label style={{ fontSize: 12, color: "#555" }}>
-                Project name
-                <input value={projectName} onChange={(e) => setProjectName(e.target.value)} style={{ width: 260, marginTop: 6, padding: 8 }} />
-              </label>
-              <button
-                disabled={busy}
-                onClick={() =>
-                  run(async () => {
-                    const proj = await apiFetch(apiBase, "/projects/", { method: "POST", body: { name: projectName } });
-                    setProjectId(proj.id || "");
-                    await refreshProjects();
-                    await refreshKbs(proj.id);
-                    return proj;
-                  })
-                }
-              >
-                Create project
-              </button>
+          <div style={{ display: "grid", gap: 14 }}>
+            <div>
+              <label className="fieldLabel">Project name</label>
+              <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
+                <input className="field" value={projectName} onChange={(e) => setProjectName(e.target.value)} style={{ flex: "1 1 320px" }} />
+                <button
+                  className="btn btnPrimary"
+                  disabled={busy}
+                  onClick={() =>
+                    run(async () => {
+                      const proj = await apiFetch(apiBase, "/projects/", { method: "POST", body: { name: projectName } });
+                      setProjectId(proj.id || "");
+                      await refreshProjects();
+                      await refreshKbs(proj.id);
+                      return proj;
+                    })
+                  }
+                >
+                  Create
+                </button>
+              </div>
             </div>
 
-            <div style={{ display: "flex", gap: 8, alignItems: "flex-end", flexWrap: "wrap" }}>
-              <label style={{ fontSize: 12, color: "#555" }}>
-                project_id
-                <select value={projectId} onChange={(e) => setProjectId(e.target.value)} style={{ width: 360, marginTop: 6, padding: 8 }}>
+            <div>
+              <label className="fieldLabel">Project</label>
+              <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
+                <select className="field" value={projectId} onChange={(e) => setProjectId(e.target.value)} style={{ flex: "1 1 320px" }}>
                   <option value="">(select)</option>
                   {projects.map((p) => (
                     <option key={p.id} value={p.id}>
@@ -205,41 +159,41 @@ export default function UploadPage() {
                     </option>
                   ))}
                 </select>
-              </label>
-              <button disabled={busy || !projectId} onClick={() => run(() => refreshKbs(projectId))}>
-                Load KBs
-              </button>
+                <button className="btn" disabled={busy || !projectId} onClick={() => run(() => refreshKbs(projectId))}>
+                  Load KBs
+                </button>
+              </div>
             </div>
 
-            <div style={{ display: "flex", gap: 8, alignItems: "flex-end", flexWrap: "wrap" }}>
-              <label style={{ fontSize: 12, color: "#555" }}>
-                KB name
-                <input value={kbName} onChange={(e) => setKbName(e.target.value)} style={{ width: 240, marginTop: 6, padding: 8 }} />
-              </label>
-              <label style={{ fontSize: 12, color: "#555" }}>
-                KB description
-                <input value={kbDescription} onChange={(e) => setKbDescription(e.target.value)} style={{ width: 260, marginTop: 6, padding: 8 }} />
-              </label>
-              <button
-                disabled={busy || !projectId}
-                onClick={() =>
-                  run(async () => {
-                    const kb = await apiFetch(apiBase, "/kb/", { method: "POST", body: { project_id: projectId, name: kbName, description: kbDescription || null } });
-                    setKbId(kb.id || "");
-                    await refreshKbs(projectId);
-                    await refreshDocs(kb.id);
-                    return kb;
-                  })
-                }
-              >
-                Create KB
-              </button>
+            <div>
+              <label className="fieldLabel">KB name</label>
+              <input className="field" value={kbName} onChange={(e) => setKbName(e.target.value)} />
+              <div style={{ height: 10 }} />
+              <label className="fieldLabel">KB description</label>
+              <input className="field" value={kbDescription} onChange={(e) => setKbDescription(e.target.value)} />
+              <div style={{ marginTop: 10 }}>
+                <button
+                  className="btn btnPrimary"
+                  disabled={busy || !projectId}
+                  onClick={() =>
+                    run(async () => {
+                      const kb = await apiFetch(apiBase, "/kb/", { method: "POST", body: { project_id: projectId, name: kbName, description: kbDescription || null } });
+                      setKbId(kb.id || "");
+                      await refreshKbs(projectId);
+                      await refreshDocs(kb.id);
+                      return kb;
+                    })
+                  }
+                >
+                  Create KB
+                </button>
+              </div>
             </div>
 
-            <div style={{ display: "flex", gap: 8, alignItems: "flex-end", flexWrap: "wrap" }}>
-              <label style={{ fontSize: 12, color: "#555" }}>
-                kb_id
-                <select value={kbId} onChange={(e) => setKbId(e.target.value)} style={{ width: 360, marginTop: 6, padding: 8 }}>
+            <div>
+              <label className="fieldLabel">KB</label>
+              <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
+                <select className="field" value={kbId} onChange={(e) => setKbId(e.target.value)} style={{ flex: "1 1 320px" }}>
                   <option value="">(select)</option>
                   {kbs.map((k) => (
                     <option key={k.id} value={k.id}>
@@ -247,54 +201,54 @@ export default function UploadPage() {
                     </option>
                   ))}
                 </select>
-              </label>
-              <button disabled={busy || !kbId} onClick={() => run(() => refreshDocs(kbId))}>
-                Load documents
-              </button>
+                <button className="btn" disabled={busy || !kbId} onClick={() => run(() => refreshDocs(kbId))}>
+                  Load docs
+                </button>
+              </div>
             </div>
 
-            <div style={{ display: "flex", gap: 8, alignItems: "flex-end", flexWrap: "wrap" }}>
-              <label style={{ fontSize: 12, color: "#555" }}>
-                Document title
-                <input value={docTitle} onChange={(e) => setDocTitle(e.target.value)} style={{ width: 360, marginTop: 6, padding: 8 }} />
-              </label>
-              <button
-                disabled={busy || !kbId}
-                onClick={() =>
-                  run(async () => {
-                    const doc = await apiFetch(apiBase, "/documents/", { method: "POST", body: { kb_id: kbId, title: docTitle } });
-                    setDocId(doc.id || "");
-                    await refreshDocs(kbId);
-                    return doc;
-                  })
-                }
-              >
-                Create document
-              </button>
+            <div>
+              <label className="fieldLabel">Document title</label>
+              <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
+                <input className="field" value={docTitle} onChange={(e) => setDocTitle(e.target.value)} style={{ flex: "1 1 320px" }} />
+                <button
+                  className="btn btnPrimary"
+                  disabled={busy || !kbId}
+                  onClick={() =>
+                    run(async () => {
+                      const doc = await apiFetch(apiBase, "/documents/", { method: "POST", body: { kb_id: kbId, title: docTitle } });
+                      setDocId(doc.id || "");
+                      await refreshDocs(kbId);
+                      return doc;
+                    })
+                  }
+                >
+                  Create
+                </button>
+              </div>
             </div>
 
-            <div style={{ display: "flex", gap: 8, alignItems: "flex-end", flexWrap: "wrap" }}>
-              <label style={{ fontSize: 12, color: "#555" }}>
-                doc_id
-                <select value={docId} onChange={(e) => setDocId(e.target.value)} style={{ width: 360, marginTop: 6, padding: 8 }}>
-                  <option value="">(select)</option>
-                  {documents.map((d) => (
-                    <option key={d.id} value={d.id}>
-                      {d.title || "Untitled"} ({d.id.slice(0, 6)}…)
-                    </option>
-                  ))}
-                </select>
-              </label>
+            <div>
+              <label className="fieldLabel">Document</label>
+              <select className="field" value={docId} onChange={(e) => setDocId(e.target.value)}>
+                <option value="">(select)</option>
+                {documents.map((d) => (
+                  <option key={d.id} value={d.id}>
+                    {d.title || "Untitled"} ({d.id.slice(0, 6)}…)
+                  </option>
+                ))}
+              </select>
             </div>
           </div>
         </section>
       </div>
 
-      <section style={{ border: "1px solid #eee", borderRadius: 10, padding: 14, marginTop: 14 }}>
+      <section className="card" style={{ padding: 16, marginTop: 14 }}>
         <h2 style={{ marginTop: 0 }}>Upload file</h2>
         <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
           <input type="file" onChange={(e) => setFile(e.target.files?.[0] || null)} />
           <button
+            className="btn btnPrimary"
             disabled={busy || !docId || !file}
             onClick={() =>
               run(async () => {
@@ -304,18 +258,21 @@ export default function UploadPage() {
               })
             }
           >
-            Upload to selected doc
+            Upload
           </button>
-          <span style={{ fontSize: 12, color: "#666" }}>{docId ? `doc_id=${docId}` : "Select a document first"}</span>
+          <span className="muted" style={{ fontSize: 12 }}>
+            {docId ? `doc_id=${docId}` : "Select a document first"}
+          </span>
         </div>
       </section>
 
-      <section style={{ border: "1px solid #eee", borderRadius: 10, padding: 14, marginTop: 14 }}>
+      <section className="card" style={{ padding: 16, marginTop: 14 }}>
         <h2 style={{ marginTop: 0 }}>Result</h2>
         {error ? <pre style={{ color: "#b00020", whiteSpace: "pre-wrap" }}>{error}</pre> : null}
-        <pre style={{ background: "#fafafa", border: "1px solid #eee", borderRadius: 10, padding: 12, overflowX: "auto" }}>{output ? pretty(output) : "—"}</pre>
+        <pre style={{ background: "rgba(255,122,24,.03)", border: "1px solid var(--border)", borderRadius: 14, padding: 12, overflowX: "auto" }}>
+          {output ? pretty(output) : "—"}
+        </pre>
       </section>
-    </div>
+    </Layout>
   );
 }
-
