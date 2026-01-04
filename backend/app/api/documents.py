@@ -11,6 +11,7 @@ from app.agent.profiling import generate_document_profile
 from pathlib import Path
 import os
 import shutil
+import uuid
 
 router = APIRouter(prefix="/documents", tags=["documents"])
 
@@ -23,9 +24,15 @@ def create_document(payload: DocumentCreate, db: Session = Depends(get_session))
         if not kb:
             raise HTTPException(status_code=404, detail="knowledge base not found")
 
+    title = (payload.title or "").strip()
+    doc_id = str(uuid.uuid4())
+    if not title:
+        title = f"Document {doc_id[:8]}"
     doc = models.Document(
-        title=payload.title,
+        id=doc_id,
+        title=title,
         kb_id=payload.kb_id,
+        folder_id=payload.folder_id,
     )
     try:
         db.add(doc)
@@ -146,6 +153,11 @@ async def upload_document_file(doc_id: str, file: UploadFile = File(...), db: Se
     doc = db.get(models.Document, doc_id)
     if not doc:
         raise HTTPException(status_code=404, detail="document not found")
+
+    if file.filename and (not doc.title or doc.title.startswith("Document ")):
+        doc.title = Path(file.filename).stem
+        db.add(doc)
+        db.commit()
 
     data = await file.read()
     try:

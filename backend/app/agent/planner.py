@@ -13,6 +13,8 @@ ALLOWED_ACTIONS = {
     "get_document_profile",
     "route_documents",
     "vector_search",
+    "keyword_search",
+    "web_search",
     "answer_with_context",
 }
 
@@ -65,9 +67,13 @@ def plan_next_step(
                 "- If you need evidence from docs, choose route_documents (optional) then vector_search then answer_with_context.\n"
                 "- Do NOT ask the user clarifying questions; make best-effort assumptions and proceed.\n"
                 "- If info is missing/ambiguous, prefer vector_search and then produce a final answer that states assumptions/uncertainty.\n"
+                "- Prefer keyword_search for exact terms (IDs, numbers, quoted phrases); vector_search for semantic queries.\n"
+                "- Use web_search for general internet queries not likely contained in the KB.\n"
                 "Args schema hints:\n"
                 "- final: {\"answer\": \"...\"}\n"
                 "- vector_search: {\"query\": \"...\", \"top_k\": <int optional>, \"document_id\": <str optional>}\n"
+                "- keyword_search: {\"query\": \"...\", \"top_k\": <int optional>, \"document_id\": <str optional>}\n"
+                "- web_search: {\"query\": \"...\", \"top_k\": <int optional>}\n"
             ),
         },
         {

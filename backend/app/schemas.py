@@ -29,7 +29,8 @@ class KnowledgeBaseUpdate(BaseModel):
 
 class DocumentCreate(BaseModel):
     kb_id: Optional[str]
-    title: str
+    title: Optional[str] = None
+    folder_id: Optional[str] = None
 
 
 class DocumentRead(BaseModel):

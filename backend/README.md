@@ -1,7 +1,7 @@
 Backend (FastAPI)
 
 - Run locally (Windows/PowerShell):
-  - `python -m venv .venv` and activate it with `.\.venv\Scripts\activate`
+  - `python -m venv .venv` and activate it with `source .venv/bin/activate`
   - `pip install -r requirements.txt`
   - set env (example):  
     ```

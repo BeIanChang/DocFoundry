@@ -41,8 +41,6 @@ export default function UploadPage() {
   const [projectName, setProjectName] = useState("Demo Project");
   const [kbName, setKbName] = useState("Demo KB");
   const [kbDescription, setKbDescription] = useState("");
-  const [docTitle, setDocTitle] = useState("New Document");
-
   const [projectId, setProjectId] = useState("");
   const [kbId, setKbId] = useState("");
   const [docId, setDocId] = useState("");
@@ -208,28 +206,7 @@ export default function UploadPage() {
             </div>
 
             <div>
-              <label className="fieldLabel">Document title</label>
-              <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
-                <input className="field" value={docTitle} onChange={(e) => setDocTitle(e.target.value)} style={{ flex: "1 1 320px" }} />
-                <button
-                  className="btn btnPrimary"
-                  disabled={busy || !kbId}
-                  onClick={() =>
-                    run(async () => {
-                      const doc = await apiFetch(apiBase, "/documents/", { method: "POST", body: { kb_id: kbId, title: docTitle } });
-                      setDocId(doc.id || "");
-                      await refreshDocs(kbId);
-                      return doc;
-                    })
-                  }
-                >
-                  Create
-                </button>
-              </div>
-            </div>
-
-            <div>
-              <label className="fieldLabel">Document</label>
+              <label className="fieldLabel">Document (optional)</label>
               <select className="field" value={docId} onChange={(e) => setDocId(e.target.value)}>
                 <option value="">(select)</option>
                 {documents.map((d) => (
@@ -249,19 +226,27 @@ export default function UploadPage() {
           <input type="file" onChange={(e) => setFile(e.target.files?.[0] || null)} />
           <button
             className="btn btnPrimary"
-            disabled={busy || !docId || !file}
+            disabled={busy || !kbId || !file}
             onClick={() =>
               run(async () => {
+                let targetDocId = docId;
+                if (!targetDocId) {
+                  const baseTitle = file?.name ? file.name.replace(/\.[^/.]+$/, "") : "New Document";
+                  const doc = await apiFetch(apiBase, "/documents/", { method: "POST", body: { kb_id: kbId, title: baseTitle } });
+                  targetDocId = doc.id;
+                  setDocId(targetDocId || "");
+                  await refreshDocs(kbId);
+                }
                 const form = new FormData();
                 form.append("file", file);
-                return apiFetch(apiBase, `/documents/${encodeURIComponent(docId)}/upload`, { method: "POST", body: form, isForm: true });
+                return apiFetch(apiBase, `/documents/${encodeURIComponent(targetDocId)}/upload`, { method: "POST", body: form, isForm: true });
               })
             }
           >
             Upload
           </button>
           <span className="muted" style={{ fontSize: 12 }}>
-            {docId ? `doc_id=${docId}` : "Select a document first"}
+            {docId ? `doc_id=${docId}` : "No document selected, we will create one from the file name"}
           </span>
         </div>
       </section>

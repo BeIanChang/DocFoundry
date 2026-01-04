@@ -30,7 +30,7 @@ def _safe_file_response(path_str: str) -> FileResponse:
 def get_tree(db: Session = Depends(get_session)):
     """
     Returns a VSCode-like nested tree:
-    projects -> knowledge_bases -> documents -> versions (+ profile/text availability)
+    projects -> knowledge_bases -> folders/documents -> versions (+ profile/text availability)
     """
     projects = db.query(models.Project).order_by(models.Project.created_at.desc()).all()
     out = {"projects": []}
@@ -50,6 +50,29 @@ def get_tree(db: Session = Depends(get_session)):
                 .all()
             )
             kb_item = {"id": kb.id, "name": kb.name, "documents": []}
+            folder_rows = (
+                db.query(models.Folder)
+                .filter(models.Folder.kb_id == kb.id)
+                .order_by(models.Folder.created_at.asc())
+                .all()
+            )
+            folder_nodes = {}
+            for f in folder_rows:
+                folder_nodes[f.id] = {
+                    "id": f.id,
+                    "kb_id": f.kb_id,
+                    "parent_id": f.parent_id,
+                    "name": f.name,
+                    "folders": [],
+                    "documents": [],
+                }
+            kb_item["folders"] = []
+            for f in folder_rows:
+                node = folder_nodes[f.id]
+                if f.parent_id and f.parent_id in folder_nodes:
+                    folder_nodes[f.parent_id]["folders"].append(node)
+                else:
+                    kb_item["folders"].append(node)
             for d in docs:
                 versions = (
                     db.query(models.DocumentVersion)
@@ -82,7 +105,10 @@ def get_tree(db: Session = Depends(get_session)):
                             "has_profile": has_profile,
                         }
                     )
-                kb_item["documents"].append(d_item)
+                if d.folder_id and d.folder_id in folder_nodes:
+                    folder_nodes[d.folder_id]["documents"].append(d_item)
+                else:
+                    kb_item["documents"].append(d_item)
             p_item["knowledge_bases"].append(kb_item)
         out["projects"].append(p_item)
     return out
@@ -121,4 +147,3 @@ def get_version_text(version_id: str, db: Session = Depends(get_session)):
     if not t:
         raise HTTPException(status_code=404, detail="no parsed text stored for this version")
     return {"version_id": version_id, "document_id": t.document_id, "text": t.text}
-

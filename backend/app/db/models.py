@@ -55,6 +55,19 @@ class KnowledgeBase(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     project = relationship('Project', back_populates='knowledge_bases')
     documents = relationship('Document', back_populates='knowledge_base')
+    folders = relationship('Folder', back_populates='knowledge_base')
+
+
+class Folder(Base):
+    __tablename__ = 'folders'
+    id = Column(String(36), primary_key=True, default=gen_uuid)
+    kb_id = Column(String(36), ForeignKey('knowledge_bases.id'), nullable=False)
+    parent_id = Column(String(36), ForeignKey('folders.id'), nullable=True)
+    name = Column(String(255), nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    knowledge_base = relationship('KnowledgeBase', back_populates='folders')
+    parent = relationship('Folder', remote_side=[id], backref='children')
+    documents = relationship('Document', back_populates='folder')
 
 
 class Document(Base):
@@ -62,9 +75,11 @@ class Document(Base):
     id = Column(String(36), primary_key=True, default=gen_uuid)
     title = Column(String(1024))
     kb_id = Column(String(36), ForeignKey('knowledge_bases.id'), nullable=True)
+    folder_id = Column(String(36), ForeignKey('folders.id'), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     knowledge_base = relationship('KnowledgeBase', back_populates='documents')
     versions = relationship('DocumentVersion', back_populates='document')
+    folder = relationship('Folder', back_populates='documents')
 
 
 class DocumentVersion(Base):

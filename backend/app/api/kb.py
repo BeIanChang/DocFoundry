@@ -101,6 +101,15 @@ def delete_kb(kb_id: str, db: Session = Depends(get_session)):
     kb = db.get(models.KnowledgeBase, kb_id)
     if not kb:
         raise HTTPException(status_code=404, detail="knowledge base not found")
+    docs = db.query(models.Document).filter(models.Document.kb_id == kb_id).all()
+    from app.api.documents import delete_document
+    for d in docs:
+        try:
+            delete_document(d.id, db=db)
+        except Exception:
+            # best-effort delete in dev
+            pass
+    db.query(models.Folder).filter(models.Folder.kb_id == kb_id).delete(synchronize_session=False)
     db.delete(kb)
     db.commit()
-    return {"status": "deleted"}
+    return {"status": "deleted", "documents_deleted": len(docs)}

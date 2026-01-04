@@ -1,6 +1,6 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import Layout from "../components/Layout";
-import { getApiBase, setApiBase } from "../components/auth";
+import { getApiBase, getToken, setApiBase } from "../components/auth";
 
 function pretty(obj) {
   try {
@@ -10,8 +10,9 @@ function pretty(obj) {
   }
 }
 
-async function apiFetch(base, path, { method = "GET", body } = {}) {
+async function apiFetch(base, path, { method = "GET", body, token } = {}) {
   const headers = {};
+  if (token) headers.Authorization = `Bearer ${token}`;
   if (body) headers["Content-Type"] = "application/json";
   const res = await fetch(`${base}${path}`, { method, headers, body: body ? JSON.stringify(body) : undefined });
   const text = await res.text();
@@ -40,41 +41,56 @@ function useQueryParam(name) {
   return val;
 }
 
-function TreeItem({ depth, label, selected, onClick, children, collapsed, onToggle }) {
+function TreeItem({ depth, label, selected, onClick, children, collapsed, onToggle, meta }) {
   return (
     <div>
       <div
         onClick={onClick}
-        style={{
-          padding: "6px 8px",
-          marginLeft: depth * 10,
-          borderRadius: 10,
-          cursor: "pointer",
-          display: "flex",
-          alignItems: "center",
-          gap: 8,
-          background: selected ? "rgba(255,122,24,.12)" : "transparent",
-          border: selected ? "1px solid rgba(255,122,24,.25)" : "1px solid transparent",
-        }}
+        className={`treeRow ${selected ? "treeSelected" : ""}`}
+        style={{ paddingLeft: 8 + depth * 12 }}
       >
         {onToggle ? (
           <button
-            className="btn"
+            className="treeToggle"
             onClick={(e) => {
               e.stopPropagation();
               onToggle();
             }}
-            style={{ padding: "4px 8px", borderRadius: 10, height: 30 }}
             aria-label={collapsed ? "Expand" : "Collapse"}
           >
-            {collapsed ? "+" : "–"}
+            {collapsed ? ">" : "v"}
           </button>
         ) : (
-          <span style={{ width: 34 }} />
+          <span className="treeToggleSpacer" />
         )}
-        <div style={{ fontSize: 13, fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{label}</div>
+        <div className="treeLabel" title={label}>
+          {label}
+        </div>
+        {meta ? <div className="treeMeta">{meta}</div> : null}
       </div>
       {children}
+    </div>
+  );
+}
+
+function Bubble({ role, children }) {
+  const isUser = role === "user";
+  return (
+    <div style={{ display: "flex", justifyContent: isUser ? "flex-end" : "flex-start", margin: "10px 0" }}>
+      <div
+        style={{
+          maxWidth: "85%",
+          padding: "10px 12px",
+          borderRadius: 14,
+          border: "1px solid var(--border)",
+          background: isUser ? "linear-gradient(135deg, var(--orange), var(--orange-2))" : "#fff",
+          color: isUser ? "#fff" : "#111",
+          whiteSpace: "pre-wrap",
+          lineHeight: 1.35,
+        }}
+      >
+        {children}
+      </div>
     </div>
   );
 }
@@ -86,11 +102,13 @@ export default function LibraryPage() {
   const versionIdFromUrl = useQueryParam("version_id");
 
   const [tree, setTree] = useState(null);
+  const [projectOptions, setProjectOptions] = useState([]);
 
   const [selectedProjectId, setSelectedProjectId] = useState("");
   const [selectedKbId, setSelectedKbId] = useState("");
   const [selectedDocId, setSelectedDocId] = useState("");
   const [selectedVersionId, setSelectedVersionId] = useState("");
+  const [selectedFolderId, setSelectedFolderId] = useState("");
 
   const [docProfile, setDocProfile] = useState(null);
   const [chunk, setChunk] = useState(null);
@@ -99,6 +117,15 @@ export default function LibraryPage() {
   const [activeTab, setActiveTab] = useState("parsed"); // parsed|raw
   const [error, setError] = useState("");
   const [collapsed, setCollapsed] = useState({});
+
+  const [messages, setMessages] = useState([
+    { role: "assistant", content: "Ask me about your documents. Use the file tree to scope context." },
+  ]);
+  const [draft, setDraft] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [showTrace, setShowTrace] = useState(false);
+  const [topK, setTopK] = useState(5);
+  const chatRef = useRef(null);
 
   useEffect(() => {
     setApiBaseState(getApiBase());
@@ -113,7 +140,14 @@ export default function LibraryPage() {
 
   useEffect(() => {
     apiFetch(apiBase, "/library/tree")
-      .then((t) => setTree(t))
+      .then((t) => {
+        setTree(t);
+        const projects = (t?.projects || []).map((p) => ({ id: p.id, name: p.name }));
+        setProjectOptions(projects);
+        if (!selectedProjectId && projects.length) {
+          setSelectedProjectId(projects[0].id);
+        }
+      })
       .catch(() => {});
   }, [apiBase]);
 
@@ -157,7 +191,11 @@ export default function LibraryPage() {
   useEffect(() => {
     if (documentIdFromUrl) setSelectedDocId(documentIdFromUrl);
     if (versionIdFromUrl) setSelectedVersionId(versionIdFromUrl);
-  }, [documentIdFromUrl]);
+  }, [documentIdFromUrl, versionIdFromUrl]);
+
+  useEffect(() => {
+    chatRef.current?.scrollTo?.({ top: chatRef.current.scrollHeight, behavior: "smooth" });
+  }, [messages.length, busy]);
 
   const openLink = (params) => {
     const url = new URL(window.location.href);
@@ -185,6 +223,36 @@ export default function LibraryPage() {
     setTree(t);
   };
 
+  const createFolder = async () => {
+    if (!selectedKbId) return;
+    const name = window.prompt("Folder name?");
+    if (!name) return;
+    setError("");
+    try {
+      await apiFetch(apiBase, "/folders/", { method: "POST", body: { kb_id: selectedKbId, parent_id: selectedFolderId || null, name } });
+      await refreshTree();
+    } catch (e) {
+      setError(e?.message || String(e));
+    }
+  };
+
+  const deleteSelectedKb = async () => {
+    if (!selectedKbId) return;
+    const ok = window.confirm("Delete this KB and all documents/folders? This cannot be undone.");
+    if (!ok) return;
+    setError("");
+    try {
+      await apiFetch(apiBase, `/kb/${encodeURIComponent(selectedKbId)}`, { method: "DELETE" });
+      setSelectedKbId("");
+      setSelectedDocId("");
+      setSelectedFolderId("");
+      setSelectedVersionId("");
+      await refreshTree();
+    } catch (e) {
+      setError(e?.message || String(e));
+    }
+  };
+
   const deleteSelectedDocument = async () => {
     if (!selectedDocId) return;
     const ok = window.confirm("Delete this document and all versions/chunks? This cannot be undone.");
@@ -198,17 +266,84 @@ export default function LibraryPage() {
       setParsedText("");
       setVersionMeta(null);
       setDocProfile(null);
+      setSelectedFolderId("");
       await refreshTree();
     } catch (e) {
       setError(e?.message || String(e));
     }
   };
 
+  const send = async () => {
+    const text = draft.trim();
+    if (!text || busy) return;
+    setError("");
+    setBusy(true);
+    setDraft("");
+    setMessages((m) => [...m, { role: "user", content: text }]);
+
+    const token = getToken();
+    if (!token) {
+      setMessages((m) => [
+        ...m,
+        { role: "assistant", content: "You’re not logged in. Use the top-right Account menu to login/register, then retry." },
+      ]);
+      setBusy(false);
+      return;
+    }
+
+    try {
+      const resp = await apiFetch(apiBase, "/agent/query", {
+        method: "POST",
+        token,
+        body: {
+          message: text,
+          project_id: selectedProjectId || null,
+          kb_id: selectedKbId || null,
+          document_id: selectedDocId || null,
+          top_k: topK,
+          return_steps: !!showTrace,
+        },
+      });
+
+      const citations = (resp.citations || []).slice(0, 5);
+      const citeLine =
+        citations.length > 0
+          ? `\n\nSources:\n${citations
+              .map((c, i) => {
+                const meta = c.metadata || {};
+                const label = meta.document_id ? `doc=${meta.document_id}` : "doc=?";
+                const chunk = c.chunk_id ? `chunk=${c.chunk_id}` : "chunk=?";
+                return `- [${i + 1}] ${label} ${chunk}${c.score != null ? ` score=${Number(c.score).toFixed(2)}` : ""}`;
+              })
+              .join("\n")}`
+          : "";
+
+      setMessages((m) => [
+        ...m,
+        {
+          role: "assistant",
+          content: `${resp.answer || ""}${citeLine}`,
+          meta: { run_id: resp.run_id, steps: resp.steps || null, citations: resp.citations || [] },
+        },
+      ]);
+    } catch (e) {
+      setError(e?.message || String(e));
+      setMessages((m) => [...m, { role: "assistant", content: `Request failed: ${e?.message || String(e)}` }]);
+    } finally {
+      setBusy(false);
+    }
+  };
+
   return (
-    <Layout title="Library" subtitle="VSCode-like explorer on the left; open raw file or parsed text on the right." right={right}>
-      <div style={{ display: "grid", gridTemplateColumns: "320px 1fr", gap: 14, alignItems: "start" }}>
+    <Layout title="Workspace" subtitle="Left: document tree. Middle: raw/parsed viewer. Right: agent chat with citations." right={right}>
+      <div className="layout3">
         <div className="card" style={{ padding: 14 }}>
-          <div style={{ fontWeight: 800, marginBottom: 10 }}>Explorer</div>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10 }}>
+            <div style={{ fontWeight: 800 }}>Explorer</div>
+            <button className="btn" onClick={() => refreshTree().catch(() => {})}>
+              Refresh
+            </button>
+          </div>
           <label className="fieldLabel">API base</label>
           <input
             className="field"
@@ -220,99 +355,146 @@ export default function LibraryPage() {
           />
 
           <div style={{ marginTop: 12 }}>
-            {tree?.projects?.length ? (
-              tree.projects.map((p) => {
-                const pKey = `p:${p.id}`;
-                const pCollapsed = !!collapsed[pKey];
-                const pSelected = selectedProjectId === p.id;
-                return (
-                  <TreeItem
-                    key={p.id}
-                    depth={0}
-                    label={`Project: ${p.name}`}
-                    selected={pSelected}
-                    collapsed={pCollapsed}
-                    onToggle={() => toggleCollapsed(pKey)}
-                    onClick={() => {
-                      setSelectedProjectId(p.id);
-                      setSelectedKbId("");
-                      setSelectedDocId("");
-                      setSelectedVersionId("");
-                    }}
-                  >
-                    {!pCollapsed
-                      ? (p.knowledge_bases || []).map((kb) => {
-                          const kbKey = `kb:${kb.id}`;
-                          const kbCollapsed = !!collapsed[kbKey];
-                          const kbSelected = selectedKbId === kb.id;
+            {projectOptions.length ? (
+              <>
+                <label className="fieldLabel">Project domain</label>
+                <select
+                  className="field"
+                  value={selectedProjectId}
+                  onChange={(e) => {
+                    setSelectedProjectId(e.target.value);
+                    setSelectedKbId("");
+                    setSelectedDocId("");
+                    setSelectedFolderId("");
+                    setSelectedVersionId("");
+                  }}
+                >
+                  {projectOptions.map((p) => (
+                    <option key={p.id} value={p.id}>
+                      {p.name} ({p.id.slice(0, 6)}…)
+                    </option>
+                  ))}
+                </select>
+                <div className="treeActions">
+                  <button className="btn" disabled={!selectedKbId} onClick={createFolder}>
+                    New folder
+                  </button>
+                  <button className="btn" disabled={!selectedKbId} onClick={deleteSelectedKb}>
+                    Delete KB
+                  </button>
+                </div>
+                <div style={{ marginTop: 12 }}>
+                  {(tree?.projects || [])
+                    .filter((p) => p.id === selectedProjectId)
+                    .map((p) =>
+                      (p.knowledge_bases || []).map((kb) => {
+                        const kbKey = `kb:${kb.id}`;
+                        const kbCollapsed = !!collapsed[kbKey];
+                        const kbSelected = selectedKbId === kb.id;
+
+                        const renderDoc = (d, depth) => {
+                          const dKey = `d:${d.id}`;
+                          const dCollapsed = !!collapsed[dKey];
+                          const dSelected = selectedDocId === d.id;
                           return (
                             <TreeItem
-                              key={kb.id}
-                              depth={1}
-                              label={`KB: ${kb.name}`}
-                              selected={kbSelected}
-                              collapsed={kbCollapsed}
-                              onToggle={() => toggleCollapsed(kbKey)}
+                              key={d.id}
+                              depth={depth}
+                              label={d.title || "Untitled"}
+                              selected={dSelected}
+                              collapsed={dCollapsed}
+                              onToggle={() => toggleCollapsed(dKey)}
                               onClick={() => {
-                                setSelectedProjectId(p.id);
                                 setSelectedKbId(kb.id);
-                                setSelectedDocId("");
+                                setSelectedDocId(d.id);
+                                setSelectedFolderId("");
                                 setSelectedVersionId("");
+                                openLink({ document_id: d.id, version_id: "", chunk_id: "" });
                               }}
                             >
-                              {!kbCollapsed
-                                ? (kb.documents || []).map((d) => {
-                                    const dKey = `d:${d.id}`;
-                                    const dCollapsed = !!collapsed[dKey];
-                                    const dSelected = selectedDocId === d.id;
+                              {!dCollapsed
+                                ? (d.versions || []).map((v) => {
+                                    const vSelected = selectedVersionId === v.id;
+                                    const suffix = v.file_name ? ` — ${v.file_name}` : "";
                                     return (
                                       <TreeItem
-                                        key={d.id}
-                                        depth={2}
-                                        label={`Doc: ${d.title || "Untitled"}`}
-                                        selected={dSelected}
-                                        collapsed={dCollapsed}
-                                        onToggle={() => toggleCollapsed(dKey)}
+                                        key={v.id}
+                                        depth={depth + 1}
+                                        label={`v${v.version_number}${suffix}`}
+                                        selected={vSelected}
                                         onClick={() => {
-                                          setSelectedProjectId(p.id);
                                           setSelectedKbId(kb.id);
                                           setSelectedDocId(d.id);
-                                          setSelectedVersionId("");
-                                          openLink({ document_id: d.id, version_id: "", chunk_id: "" });
+                                          setSelectedFolderId("");
+                                          setSelectedVersionId(v.id);
+                                          openLink({ document_id: d.id, version_id: v.id, chunk_id: "" });
                                         }}
-                                      >
-                                        {!dCollapsed
-                                          ? (d.versions || []).map((v) => {
-                                              const vSelected = selectedVersionId === v.id;
-                                              const suffix = v.file_name ? ` — ${v.file_name}` : "";
-                                              return (
-                                                <TreeItem
-                                                  key={v.id}
-                                                  depth={3}
-                                                  label={`v${v.version_number}${suffix}`}
-                                                  selected={vSelected}
-                                                  onClick={() => {
-                                                    setSelectedProjectId(p.id);
-                                                    setSelectedKbId(kb.id);
-                                                    setSelectedDocId(d.id);
-                                                    setSelectedVersionId(v.id);
-                                                    openLink({ document_id: d.id, version_id: v.id, chunk_id: "" });
-                                                  }}
-                                                />
-                                              );
-                                            })
-                                          : null}
-                                      </TreeItem>
+                                      />
                                     );
                                   })
                                 : null}
                             </TreeItem>
                           );
-                        })
-                      : null}
-                  </TreeItem>
-                );
-              })
+                        };
+
+                        const renderFolder = (f, depth) => {
+                          const fKey = `f:${f.id}`;
+                          const fCollapsed = !!collapsed[fKey];
+                          const fSelected = selectedFolderId === f.id;
+                          return (
+                            <TreeItem
+                              key={f.id}
+                              depth={depth}
+                              label={f.name}
+                              selected={fSelected}
+                              collapsed={fCollapsed}
+                              onToggle={() => toggleCollapsed(fKey)}
+                              meta="folder"
+                              onClick={() => {
+                                setSelectedKbId(kb.id);
+                                setSelectedDocId("");
+                                setSelectedVersionId("");
+                                setSelectedFolderId(f.id);
+                              }}
+                            >
+                              {!fCollapsed
+                                ? [
+                                    ...(f.folders || []).map((child) => renderFolder(child, depth + 1)),
+                                    ...(f.documents || []).map((d) => renderDoc(d, depth + 1)),
+                                  ]
+                                : null}
+                            </TreeItem>
+                          );
+                        };
+
+                        return (
+                          <TreeItem
+                            key={kb.id}
+                            depth={0}
+                            label={kb.name}
+                            selected={kbSelected}
+                            collapsed={kbCollapsed}
+                            onToggle={() => toggleCollapsed(kbKey)}
+                            meta="kb"
+                            onClick={() => {
+                              setSelectedKbId(kb.id);
+                              setSelectedDocId("");
+                              setSelectedFolderId("");
+                              setSelectedVersionId("");
+                            }}
+                          >
+                            {!kbCollapsed
+                              ? [
+                                  ...(kb.folders || []).map((f) => renderFolder(f, 1)),
+                                  ...(kb.documents || []).map((d) => renderDoc(d, 1)),
+                                ]
+                              : null}
+                          </TreeItem>
+                        );
+                      })
+                    )}
+                </div>
+              </>
             ) : (
               <div className="muted" style={{ marginTop: 10 }}>
                 No projects yet. Create and upload in the Upload page.
@@ -327,19 +509,19 @@ export default function LibraryPage() {
               <div style={{ fontWeight: 800 }}>Document</div>
               {selectedDocId ? <span className="pill mono">{selectedDocId}</span> : <span className="pill">No document selected</span>}
             </div>
-            <div style={{ marginTop: 12, display: "flex", gap: 10, flexWrap: "wrap" }}>
-              <button className="btn" disabled={!selectedDocId} onClick={deleteSelectedDocument}>
-                Delete document
-              </button>
-              <button
-                className="btn"
-                onClick={() => {
-                  refreshTree().catch(() => {});
-                }}
-              >
-                Refresh
-              </button>
-            </div>
+          <div style={{ marginTop: 12, display: "flex", gap: 10, flexWrap: "wrap" }}>
+            <button className="btn" disabled={!selectedDocId} onClick={deleteSelectedDocument}>
+              Delete document
+            </button>
+            <button
+              className="btn"
+              onClick={() => {
+                refreshTree().catch(() => {});
+              }}
+            >
+              Refresh
+            </button>
+          </div>
             {docProfile?.summary ? (
               <div style={{ marginTop: 12, lineHeight: 1.55 }}>
                 <div className="muted" style={{ fontSize: 12 }}>
@@ -406,6 +588,97 @@ export default function LibraryPage() {
                 </pre>
               </div>
             ) : null}
+          </div>
+        </div>
+
+        <div className="card" style={{ padding: 14, display: "flex", flexDirection: "column", minHeight: "70vh" }}>
+          <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "center" }}>
+            <div style={{ fontWeight: 800 }}>Agent Chat</div>
+            <div className="pill mono">
+              {selectedProjectId ? selectedProjectId.slice(0, 6) : "∗"}/{selectedKbId ? selectedKbId.slice(0, 6) : "∗"}/{selectedDocId ? selectedDocId.slice(0, 6) : "∗"}
+            </div>
+          </div>
+
+          <div style={{ marginTop: 10, display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+            <label className="fieldLabel" style={{ margin: 0 }}>
+              top_k
+            </label>
+            <input className="field" value={topK} onChange={(e) => setTopK(Number(e.target.value || 5))} type="number" min={1} max={50} style={{ width: 110 }} />
+            <button className="btn" onClick={() => setMessages([{ role: "assistant", content: "New chat started. Ask away." }])}>
+              New chat
+            </button>
+            <label style={{ display: "flex", gap: 8, alignItems: "center", fontSize: 12, color: "var(--muted)" }}>
+              <input type="checkbox" checked={showTrace} onChange={(e) => setShowTrace(e.target.checked)} />
+              Show trace
+            </label>
+          </div>
+
+          <div ref={chatRef} style={{ flex: 1, overflowY: "auto", marginTop: 12, padding: 12, background: "rgba(255,122,24,.03)", borderRadius: 14, border: "1px solid var(--border)" }}>
+            {messages.map((m, idx) => {
+              const steps = m?.meta?.steps;
+              const runId = m?.meta?.run_id;
+              return (
+                <div key={idx}>
+                  <Bubble role={m.role}>{m.content}</Bubble>
+                  {m.role === "assistant" && Array.isArray(m?.meta?.citations) && m.meta.citations.length ? (
+                    <div style={{ marginTop: -2, marginBottom: 12, display: "flex", gap: 8, flexWrap: "wrap" }}>
+                      {m.meta.citations.slice(0, 5).map((c, i) => {
+                        const meta = c.metadata || {};
+                        const docId = meta.document_id || "";
+                        const versionId = meta.version_id || "";
+                        const chunkId = c.chunk_id || "";
+                        const isWeb = meta.source === "web" && meta.url;
+                        const href = isWeb
+                          ? meta.url
+                          : chunkId
+                          ? `/library?chunk_id=${encodeURIComponent(chunkId)}&document_id=${encodeURIComponent(docId)}&version_id=${encodeURIComponent(versionId)}`
+                          : `/library?document_id=${encodeURIComponent(docId)}`;
+                        return (
+                          <a key={`${chunkId || i}`} className="pill" href={href} style={{ cursor: "pointer" }} target={isWeb ? "_blank" : undefined} rel={isWeb ? "noreferrer" : undefined}>
+                            Source {i + 1}
+                          </a>
+                        );
+                      })}
+                    </div>
+                  ) : null}
+                  {m.role === "assistant" && showTrace && runId ? (
+                    <details style={{ marginTop: -2, marginBottom: 10 }}>
+                      <summary style={{ cursor: "pointer", color: "var(--muted)", fontSize: 12 }}>Trace (run_id={runId.slice(0, 8)}…)</summary>
+                      <pre style={{ marginTop: 8, padding: 10, background: "#fff", border: "1px solid var(--border)", borderRadius: 14, overflowX: "auto", fontSize: 12, whiteSpace: "pre-wrap" }}>
+                        {steps ? pretty(steps) : "No steps returned (toggle on before sending)."}
+                      </pre>
+                    </details>
+                  ) : null}
+                </div>
+              );
+            })}
+          </div>
+
+          <div style={{ marginTop: 12 }}>
+            {error ? (
+              <div style={{ marginBottom: 10, color: "#b00020", whiteSpace: "pre-wrap" }}>
+                {error}
+              </div>
+            ) : null}
+            <div style={{ display: "flex", gap: 10, alignItems: "flex-end" }}>
+              <textarea
+                className="field"
+                value={draft}
+                onChange={(e) => setDraft(e.target.value)}
+                placeholder="Ask the agent…"
+                rows={2}
+                style={{ flex: 1, resize: "vertical", minHeight: 44 }}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) send();
+                }}
+              />
+              <button className="btn btnPrimary" disabled={busy || !draft.trim()} onClick={send} style={{ height: 44 }}>
+                Send
+              </button>
+            </div>
+            <div className="muted" style={{ marginTop: 8, fontSize: 12 }}>
+              Tip: Press Ctrl/Cmd+Enter to send.
+            </div>
           </div>
         </div>
       </div>

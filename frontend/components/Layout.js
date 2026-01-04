@@ -22,7 +22,6 @@ export default function Layout({ title, subtitle, children, right }) {
             <Link href="/">DocFoundry</Link>
           </div>
           <nav className="nav" aria-label="primary">
-            <Tab href="/chat">Chat</Tab>
             <Tab href="/library">Library</Tab>
             <Tab href="/upload">Upload</Tab>
           </nav>

@@ -5,6 +5,8 @@ from typing import Dict, List, Optional
 
 # Disable Chroma telemetry by default (avoids noisy PostHog version mismatches in dev).
 os.environ.setdefault("ANONYMIZED_TELEMETRY", "False")
+os.environ.setdefault("CHROMA_TELEMETRY", "FALSE")
+os.environ.setdefault("POSTHOG_DISABLED", "1")
 
 try:
     import chromadb  # type: ignore

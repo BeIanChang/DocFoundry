@@ -52,6 +52,7 @@ from app.api.projects import router as projects_router
 from app.api.chat import router as chat_router
 from app.api.chunks import router as chunks_router
 from app.api.library import router as library_router
+from app.api.folders import router as folders_router
 from app.agent.router import router as agent_router
 
 app.include_router(kb_router)
@@ -62,6 +63,7 @@ app.include_router(projects_router)
 app.include_router(chat_router)
 app.include_router(chunks_router)
 app.include_router(library_router)
+app.include_router(folders_router)
 app.include_router(agent_router)
 
 @app.get("/health")

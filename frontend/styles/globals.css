@@ -87,6 +87,14 @@ button, input, select, textarea{font:inherit}
   .grid2{grid-template-columns:1fr}
 }
 
+.layout3{display:grid;grid-template-columns:300px 1fr 360px;gap:14px;align-items:start}
+@media (max-width: 1200px){
+  .layout3{grid-template-columns:280px 1fr}
+}
+@media (max-width: 980px){
+  .layout3{grid-template-columns:1fr}
+}
+
 .pill{
   display:inline-flex;align-items:center;
   padding: 4px 10px;
@@ -97,3 +105,47 @@ button, input, select, textarea{font:inherit}
   font-size: 12px;
 }
 
+.treeRow{
+  display:flex;
+  align-items:center;
+  gap:6px;
+  padding:4px 8px;
+  border-radius:8px;
+  border:1px solid transparent;
+  cursor:pointer;
+  color:#1f1f1f;
+}
+.treeRow:hover{background:rgba(0,0,0,.03)}
+.treeSelected{
+  background:rgba(255,122,24,.12);
+  border:1px solid rgba(255,122,24,.2);
+}
+.treeToggle{
+  border:0;
+  background:transparent;
+  font-size:11px;
+  width:18px;
+  color:var(--muted);
+  cursor:pointer;
+}
+.treeToggleSpacer{display:inline-block;width:18px}
+.treeLabel{
+  font-size:12px;
+  font-weight:600;
+  overflow:hidden;
+  text-overflow:ellipsis;
+  white-space:nowrap;
+}
+.treeMeta{
+  margin-left:auto;
+  font-size:10px;
+  color:var(--muted);
+  text-transform:uppercase;
+  letter-spacing:.08em;
+}
+.treeActions{
+  margin-top:8px;
+  display:flex;
+  gap:8px;
+  flex-wrap:wrap;
+}

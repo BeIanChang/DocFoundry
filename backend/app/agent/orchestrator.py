@@ -9,7 +9,8 @@ from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
 from app.agent.schemas import AgentCitation, AgentQueryRequest, AgentQueryResponse
-from app.agent.tools import AnswerTool, VectorSearchTool
+import os
+from app.agent.tools import AnswerTool, KeywordSearchTool, VectorSearchTool, WebSearchTool
 from app.agent.planner import plan_next_step
 from app.db import models
 from app.embeddings.llm import chat
@@ -37,6 +38,8 @@ def _preview(text: str, n: int = 240) -> str:
 class AgentOrchestrator:
     def __init__(self, *, search_tool: VectorSearchTool | None = None, answer_tool: AnswerTool | None = None):
         self.search_tool = search_tool or VectorSearchTool()
+        self.keyword_tool = KeywordSearchTool()
+        self.web_tool = WebSearchTool()
         self.answer_tool = answer_tool or AnswerTool()
 
     def run(self, req: AgentQueryRequest, *, db: Session, user: Dict[str, Any]) -> AgentQueryResponse:
@@ -144,6 +147,67 @@ class AgentOrchestrator:
                     for c in last_contexts
                 ]
                 observations.append({"tool": "vector_search", "matches": len(last_contexts), "top": [{"chunk_id": c.chunk_id, "score": c.score} for c in last_contexts[:5]]})
+                continue
+
+            if action == "keyword_search":
+                q = plan.args.get("query") or req.message
+                doc_id = scope.document_id
+                if not doc_id and plan.args.get("document_id"):
+                    doc_id = str(plan.args.get("document_id"))
+                    if scope.kb_id:
+                        doc = db.get(models.Document, doc_id)
+                        if not doc or (doc.kb_id and doc.kb_id != scope.kb_id):
+                            observations.append({"tool": "keyword_search", "error": "document_id not in kb scope"})
+                            continue
+                    else:
+                        observations.append({"tool": "keyword_search", "error": "missing kb_id for document filter"})
+                        continue
+
+                results = self.keyword_tool.search(q, db=db, top_k=top_k, kb_id=scope.kb_id, document_id=doc_id)
+                last_contexts = results
+                citations = [
+                    AgentCitation(
+                        chunk_id=r.chunk_id,
+                        score=r.score,
+                        metadata=r.metadata or {},
+                        text_preview=_preview(r.text),
+                    )
+                    for r in results
+                ]
+                observations.append(
+                    {
+                        "tool": "keyword_search",
+                        "matches": len(results),
+                        "top": [{"chunk_id": r.chunk_id, "score": r.score, "matches": r.matches[:5]} for r in results[:5]],
+                    }
+                )
+                continue
+
+            if action == "web_search":
+                q = plan.args.get("query") or req.message
+                api_key = os.environ.get("GOOGLE_SEARCH_API_KEY", "").strip()
+                cse_id = os.environ.get("GOOGLE_CSE_ID", "").strip()
+                if not api_key or not cse_id:
+                    observations.append({"tool": "web_search", "error": "missing GOOGLE_SEARCH_API_KEY or GOOGLE_CSE_ID"})
+                    continue
+                results = self.web_tool.search(q, api_key=api_key, cse_id=cse_id, top_k=top_k)
+                last_contexts = results
+                citations = [
+                    AgentCitation(
+                        chunk_id=None,
+                        score=None,
+                        metadata=r.metadata or {},
+                        text_preview=_preview(r.text),
+                    )
+                    for r in results
+                ]
+                observations.append(
+                    {
+                        "tool": "web_search",
+                        "matches": len(results),
+                        "top": [{"title": r.metadata.get("title"), "url": r.metadata.get("url")} for r in results[:5]],
+                    }
+                )
                 continue
 
             if action == "answer_with_context":
