@@ -12,6 +12,8 @@ AgentMode = Literal["auto", "answer", "summarize", "extract"]
 class AgentQueryRequest(BaseModel):
     message: str = Field(..., min_length=1)
     project_id: Optional[str] = None
+    project_ids: Optional[List[str]] = None
+    folder_id: Optional[str] = None
     kb_id: Optional[str] = None
     document_id: Optional[str] = None
     top_k: int = 5
@@ -64,4 +66,3 @@ class AgentRetryRequest(BaseModel):
     max_steps: int = 4
     mode: AgentMode = "auto"
     return_steps: bool = True
-

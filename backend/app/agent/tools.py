@@ -25,9 +25,18 @@ class VectorSearchTool:
         *,
         top_k: int,
         kb_id: Optional[str] = None,
+        kb_ids: Optional[List[str]] = None,
         document_id: Optional[str] = None,
+        document_ids: Optional[List[str]] = None,
     ) -> List[VectorSearchResult]:
-        raw = vector_store.query_documents(query, n_results=top_k, kb_id=kb_id, document_id=document_id)
+        raw = vector_store.query_documents(
+            query,
+            n_results=top_k,
+            kb_id=kb_id,
+            kb_ids=kb_ids,
+            document_id=document_id,
+            document_ids=document_ids,
+        )
         contexts: List[VectorSearchResult] = []
 
         metadatas = raw.get("metadatas") or []
@@ -71,7 +80,11 @@ class KeywordSearchTool:
         db: Session,
         top_k: int,
         kb_id: Optional[str] = None,
+        kb_ids: Optional[List[str]] = None,
         document_id: Optional[str] = None,
+        document_ids: Optional[List[str]] = None,
+        project_ids: Optional[List[str]] = None,
+        folder_id: Optional[str] = None,
         max_candidates: int = 200,
     ) -> List[KeywordSearchResult]:
         q = (query or "").strip()
@@ -92,8 +105,18 @@ class KeywordSearchTool:
         )
         if kb_id:
             qry = qry.filter(models.Document.kb_id == kb_id)
+        elif kb_ids:
+            qry = qry.filter(models.Document.kb_id.in_(kb_ids))
+        elif folder_id:
+            qry = qry.filter(models.Document.folder_id == folder_id)
+        elif project_ids:
+            qry = qry.join(models.KnowledgeBase, models.KnowledgeBase.id == models.Document.kb_id).filter(
+                models.KnowledgeBase.project_id.in_(project_ids)
+            )
         if document_id:
             qry = qry.filter(models.Document.id == document_id)
+        elif document_ids:
+            qry = qry.filter(models.Document.id.in_(document_ids))
 
         # OR match any pattern (we'll rank later in Python)
         cond = None

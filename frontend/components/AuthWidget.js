@@ -140,9 +140,6 @@ export default function AuthWidget() {
                   Register
                 </button>
               </div>
-              <div className="muted" style={{ fontSize: 12, lineHeight: 1.4 }}>
-                Uses API base from localStorage: <span className="mono">{getApiBase()}</span>
-              </div>
             </div>
           )}
         </div>
@@ -150,4 +147,3 @@ export default function AuthWidget() {
     </div>
   );
 }
-

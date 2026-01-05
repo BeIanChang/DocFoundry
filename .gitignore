@@ -4,6 +4,7 @@ node_modules/
 .chroma/
 chroma_db/
 .env
-/APIKEY
 /develop_note.md
 /.DS_Store
+APIKEY
+k8s/secrets.yaml

@@ -1,6 +1,7 @@
 import hashlib
 import os
 import struct
+import threading
 from typing import Dict, List, Optional
 
 # Disable Chroma telemetry by default (avoids noisy PostHog version mismatches in dev).
@@ -22,6 +23,7 @@ _client = None
 _collection = None
 _embedder = None
 _embedder_kind = None
+_write_lock = threading.Lock()
 
 
 class _HashEmbedder:
@@ -97,11 +99,19 @@ def add_documents(docs: List[Dict]):
     embeddings = embedder.encode(texts, show_progress_bar=False)
     if hasattr(embeddings, "tolist"):
         embeddings = embeddings.tolist()
-    collection.add(ids=ids, documents=texts, embeddings=embeddings, metadatas=metadata)
+    with _write_lock:
+        collection.add(ids=ids, documents=texts, embeddings=embeddings, metadatas=metadata)
     return ids
 
 
-def query_documents(query: str, n_results: int = 5, kb_id: Optional[str] = None, document_id: Optional[str] = None):
+def query_documents(
+    query: str,
+    n_results: int = 5,
+    kb_id: Optional[str] = None,
+    kb_ids: Optional[List[str]] = None,
+    document_id: Optional[str] = None,
+    document_ids: Optional[List[str]] = None,
+):
     """Return top matches; optionally filter by kb_id and/or document_id."""
     collection = _get_collection()
     embedder = _get_embedder()
@@ -112,8 +122,12 @@ def query_documents(query: str, n_results: int = 5, kb_id: Optional[str] = None,
     filters = []
     if kb_id:
         filters.append({"kb_id": kb_id})
+    elif kb_ids:
+        filters.append({"kb_id": {"$in": kb_ids}})
     if document_id:
         filters.append({"document_id": document_id})
+    elif document_ids:
+        filters.append({"document_id": {"$in": document_ids}})
     # Chroma (new API) expects a single logical operator; use $and when multiple filters
     where = None
     if len(filters) == 1:
@@ -140,5 +154,6 @@ def delete_documents(ids: List[str]) -> int:
     if not ids:
         return 0
     collection = _get_collection()
-    collection.delete(ids=ids)
+    with _write_lock:
+        collection.delete(ids=ids)
     return len(ids)

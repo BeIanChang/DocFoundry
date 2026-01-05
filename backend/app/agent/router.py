@@ -58,6 +58,8 @@ def retry_run(run_id: str, payload: AgentRetryRequest, db: Session = Depends(get
     req = AgentQueryRequest(
         message=payload.message or prev.message,
         project_id=(prev.scope or {}).get("project_id"),
+        project_ids=(prev.scope or {}).get("project_ids") or None,
+        folder_id=(prev.scope or {}).get("folder_id"),
         kb_id=(prev.scope or {}).get("kb_id"),
         document_id=(prev.scope or {}).get("document_id"),
         top_k=payload.top_k,
@@ -66,4 +68,3 @@ def retry_run(run_id: str, payload: AgentRetryRequest, db: Session = Depends(get
         return_steps=payload.return_steps,
     )
     return _orchestrator.run(req, db=db, user=user)
-

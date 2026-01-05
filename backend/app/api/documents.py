@@ -4,7 +4,7 @@ from typing import List
 
 from app.db.session import get_session
 from app.db import models
-from app.schemas import DocumentCreate, DocumentRead, DocumentUpdate
+from app.schemas import DocumentCreate, DocumentRead, DocumentUpdate, DocumentProfileUpdate
 from app.parsers.chunker import chunk_text
 from app.embeddings import vector_store
 from app.agent.profiling import generate_document_profile
@@ -154,6 +154,26 @@ async def upload_document_file(doc_id: str, file: UploadFile = File(...), db: Se
     if not doc:
         raise HTTPException(status_code=404, detail="document not found")
 
+    # Only keep a single latest version per document.
+    existing_versions = (
+        db.query(models.DocumentVersion)
+        .filter(models.DocumentVersion.document_id == doc_id)
+        .order_by(models.DocumentVersion.version_number.desc())
+        .all()
+    )
+    if existing_versions:
+        version_ids = [v.id for v in existing_versions]
+        chunk_ids = [c[0] for c in db.query(models.Chunk.id).filter(models.Chunk.version_id.in_(version_ids)).all()]
+        try:
+            vector_store.delete_documents(chunk_ids)
+        except Exception:
+            pass
+        db.query(models.DocumentVersionText).filter(models.DocumentVersionText.version_id.in_(version_ids)).delete(synchronize_session=False)
+        db.query(models.DocumentProfile).filter(models.DocumentProfile.version_id.in_(version_ids)).delete(synchronize_session=False)
+        db.query(models.Chunk).filter(models.Chunk.version_id.in_(version_ids)).delete(synchronize_session=False)
+        db.query(models.DocumentVersion).filter(models.DocumentVersion.id.in_(version_ids)).delete(synchronize_session=False)
+        db.commit()
+
     if file.filename and (not doc.title or doc.title.startswith("Document ")):
         doc.title = Path(file.filename).stem
         db.add(doc)
@@ -167,14 +187,8 @@ async def upload_document_file(doc_id: str, file: UploadFile = File(...), db: Se
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"failed to parse file: {e}")
 
-    # determine next version number
-    try:
-        last_ver = db.query(models.DocumentVersion).filter(models.DocumentVersion.document_id == doc_id).order_by(models.DocumentVersion.version_number.desc()).first()
-        next_ver = 1 if not last_ver else (last_ver.version_number + 1)
-    except Exception:
-        next_ver = 1
-
-    version = models.DocumentVersion(document_id=doc_id, version_number=next_ver, file_name=file.filename)
+    # keep a single version slot (v1)
+    version = models.DocumentVersion(document_id=doc_id, version_number=1, file_name=file.filename)
     db.add(version)
     db.commit()
     db.refresh(version)
@@ -294,6 +308,62 @@ def get_document_profile(doc_id: str, db: Session = Depends(get_session)):
             "meta": {"status": "missing"},
         }
 
+    return {
+        "document_id": profile.document_id,
+        "version_id": profile.version_id,
+        "title": profile.title,
+        "file_name": profile.file_name,
+        "doc_type": profile.doc_type,
+        "year_start": profile.year_start,
+        "year_end": profile.year_end,
+        "summary": profile.summary,
+        "tags": profile.tags or [],
+        "meta": profile.meta or {},
+        "created_at": profile.created_at.isoformat() if profile.created_at else None,
+    }
+
+
+@router.put("/{doc_id}/profile")
+def update_document_profile(doc_id: str, payload: DocumentProfileUpdate, db: Session = Depends(get_session)):
+    doc = db.get(models.Document, doc_id)
+    if not doc:
+        raise HTTPException(status_code=404, detail="document not found")
+
+    ver = (
+        db.query(models.DocumentVersion)
+        .filter(models.DocumentVersion.document_id == doc_id)
+        .order_by(models.DocumentVersion.version_number.desc())
+        .first()
+    )
+    if not ver:
+        raise HTTPException(status_code=404, detail="document has no uploads")
+
+    profile = (
+        db.query(models.DocumentProfile)
+        .filter(models.DocumentProfile.version_id == ver.id)
+        .order_by(models.DocumentProfile.created_at.desc())
+        .first()
+    )
+    if not profile:
+        profile = models.DocumentProfile(
+            document_id=doc.id,
+            version_id=ver.id,
+            title=doc.title,
+            file_name=ver.file_name,
+        )
+        db.add(profile)
+
+    data = payload.dict(exclude_unset=True)
+    for field, val in data.items():
+        setattr(profile, field, val)
+    if profile.title is None:
+        profile.title = doc.title
+    if profile.file_name is None:
+        profile.file_name = ver.file_name
+
+    db.add(profile)
+    db.commit()
+    db.refresh(profile)
     return {
         "document_id": profile.document_id,
         "version_id": profile.version_id,

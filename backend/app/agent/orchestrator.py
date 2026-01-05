@@ -19,12 +19,16 @@ from app.embeddings.llm import chat
 @dataclass(frozen=True)
 class AgentScope:
     project_id: Optional[str] = None
+    project_ids: Optional[List[str]] = None
+    folder_id: Optional[str] = None
     kb_id: Optional[str] = None
     document_id: Optional[str] = None
 
     def to_json(self) -> Dict[str, Any]:
         return {
             "project_id": self.project_id,
+            "project_ids": self.project_ids or [],
+            "folder_id": self.folder_id,
             "kb_id": self.kb_id,
             "document_id": self.document_id,
         }
@@ -43,7 +47,16 @@ class AgentOrchestrator:
         self.answer_tool = answer_tool or AnswerTool()
 
     def run(self, req: AgentQueryRequest, *, db: Session, user: Dict[str, Any]) -> AgentQueryResponse:
-        scope = AgentScope(project_id=req.project_id, kb_id=req.kb_id, document_id=req.document_id)
+        project_ids = [p for p in (req.project_ids or []) if isinstance(p, str)]
+        if req.project_id and req.project_id not in project_ids:
+            project_ids = project_ids + [req.project_id]
+        scope = AgentScope(
+            project_id=req.project_id,
+            project_ids=project_ids or None,
+            folder_id=req.folder_id,
+            kb_id=req.kb_id,
+            document_id=req.document_id,
+        )
         self._validate_scope(scope, db=db)
 
         run = models.AgentRun(
@@ -141,7 +154,16 @@ class AgentOrchestrator:
                         observations.append({"tool": "vector_search", "error": "missing kb_id for document filter"})
                         continue
 
-                last_contexts = self._retrieve(q, top_k=top_k, kb_id=scope.kb_id, document_id=doc_id, routed_doc_ids=routed_doc_ids)
+                last_contexts = self._retrieve(
+                    q,
+                    top_k=top_k,
+                    kb_id=scope.kb_id,
+                    project_ids=scope.project_ids,
+                    folder_id=scope.folder_id,
+                    document_id=doc_id,
+                    routed_doc_ids=routed_doc_ids,
+                    db=db,
+                )
                 citations = [
                     AgentCitation(chunk_id=c.chunk_id, score=c.score, metadata=c.metadata or {}, text_preview=_preview(c.text))
                     for c in last_contexts
@@ -163,7 +185,17 @@ class AgentOrchestrator:
                         observations.append({"tool": "keyword_search", "error": "missing kb_id for document filter"})
                         continue
 
-                results = self.keyword_tool.search(q, db=db, top_k=top_k, kb_id=scope.kb_id, document_id=doc_id)
+                results = self.keyword_tool.search(
+                    q,
+                    db=db,
+                    top_k=top_k,
+                    kb_id=scope.kb_id,
+                    kb_ids=None,
+                    document_id=doc_id,
+                    document_ids=None,
+                    project_ids=scope.project_ids,
+                    folder_id=scope.folder_id,
+                )
                 last_contexts = results
                 citations = [
                     AgentCitation(
@@ -375,19 +407,47 @@ class AgentOrchestrator:
         *,
         top_k: int,
         kb_id: Optional[str],
+        project_ids: Optional[List[str]],
+        folder_id: Optional[str],
         document_id: Optional[str],
         routed_doc_ids: List[str],
+        db: Session,
     ):
+        doc_ids: Optional[List[str]] = None
+        if folder_id:
+            doc_ids = [
+                d.id for d in db.query(models.Document.id)
+                .filter(models.Document.folder_id == folder_id)
+                .order_by(models.Document.created_at.desc())
+                .all()
+            ]
+            if not doc_ids:
+                return []
+        kb_ids: Optional[List[str]] = None
+        if not kb_id and project_ids:
+            kb_ids = [
+                k.id
+                for k in db.query(models.KnowledgeBase.id)
+                .filter(models.KnowledgeBase.project_id.in_(project_ids))
+                .all()
+            ]
         if document_id:
-            return self.search_tool.search(query, top_k=top_k, kb_id=kb_id, document_id=document_id)
+            return self.search_tool.search(query, top_k=top_k, kb_id=kb_id, kb_ids=kb_ids, document_id=document_id)
+        if doc_ids:
+            per_doc_k = max(1, int(ceil(top_k / max(1, len(doc_ids)))))
+            all_ctx = []
+            for doc_id in doc_ids[:12]:
+                all_ctx.extend(self.search_tool.search(query, top_k=per_doc_k, kb_id=kb_id, kb_ids=kb_ids, document_id=doc_id))
+            all_ctx.sort(key=lambda c: (c.score is None, c.score))
+            return all_ctx[:top_k]
         if routed_doc_ids:
             per_doc_k = max(1, int(ceil(top_k / max(1, len(routed_doc_ids)))))
             all_ctx = []
             for doc_id in routed_doc_ids[:8]:
-                all_ctx.extend(self.search_tool.search(query, top_k=per_doc_k, kb_id=kb_id, document_id=doc_id))
+                all_ctx.extend(self.search_tool.search(query, top_k=per_doc_k, kb_id=kb_id, kb_ids=kb_ids, document_id=doc_id))
             all_ctx.sort(key=lambda c: (c.score is None, c.score))
             return all_ctx[:top_k]
-        return self.search_tool.search(query, top_k=top_k, kb_id=kb_id, document_id=None)
+        return self.search_tool.search(query, top_k=top_k, kb_id=kb_id, kb_ids=kb_ids, document_id=None)
 
     def _route_documents(self, query: str, *, kb_id: str, db: Session) -> List[str]:
         docs = db.query(models.Document).filter(models.Document.kb_id == kb_id).order_by(models.Document.created_at.desc()).all()
@@ -475,6 +535,14 @@ class AgentOrchestrator:
         return [c["document_id"] for c in candidates[:3]]
 
     def _validate_scope(self, scope: AgentScope, *, db: Session) -> None:
+        project_ids = [p for p in (scope.project_ids or []) if isinstance(p, str)]
+        if scope.project_id and scope.project_id not in project_ids:
+            project_ids.append(scope.project_id)
+        if project_ids:
+            existing = {p[0] for p in db.query(models.Project.id).filter(models.Project.id.in_(project_ids)).all()}
+            missing = [p for p in project_ids if p not in existing]
+            if missing:
+                raise HTTPException(status_code=404, detail="project not found")
         if scope.project_id:
             proj = db.get(models.Project, scope.project_id)
             if not proj:
@@ -485,12 +553,28 @@ class AgentOrchestrator:
                 raise HTTPException(status_code=404, detail="knowledge base not found")
             if scope.project_id and kb.project_id and kb.project_id != scope.project_id:
                 raise HTTPException(status_code=400, detail="kb_id does not belong to project_id")
+            if project_ids and kb.project_id and kb.project_id not in project_ids:
+                raise HTTPException(status_code=400, detail="kb_id does not belong to selected project scope")
+        if scope.folder_id:
+            folder = db.get(models.Folder, scope.folder_id)
+            if not folder:
+                raise HTTPException(status_code=404, detail="folder not found")
+            if scope.kb_id and folder.kb_id != scope.kb_id:
+                raise HTTPException(status_code=400, detail="folder_id does not belong to kb_id")
+            if project_ids:
+                kb = db.get(models.KnowledgeBase, folder.kb_id)
+                if kb and kb.project_id and kb.project_id not in project_ids:
+                    raise HTTPException(status_code=400, detail="folder_id does not belong to selected project scope")
         if scope.document_id:
             doc = db.get(models.Document, scope.document_id)
             if not doc:
                 raise HTTPException(status_code=404, detail="document not found")
             if scope.kb_id and doc.kb_id and doc.kb_id != scope.kb_id:
                 raise HTTPException(status_code=400, detail="document_id does not belong to kb_id")
+            if project_ids:
+                kb = db.get(models.KnowledgeBase, doc.kb_id) if doc.kb_id else None
+                if kb and kb.project_id and kb.project_id not in project_ids:
+                    raise HTTPException(status_code=400, detail="document_id does not belong to selected project scope")
 
     def _verify(self, answer: str, citations: List[AgentCitation]) -> Tuple[bool, str]:
         if not answer.strip():

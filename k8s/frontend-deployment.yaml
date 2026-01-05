@@ -1,0 +1,25 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: docfoundry-frontend
+  labels:
+    app: docfoundry-frontend
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: docfoundry-frontend
+  template:
+    metadata:
+      labels:
+        app: docfoundry-frontend
+    spec:
+      containers:
+        - name: frontend
+          image: 502954288490.dkr.ecr.ca-central-1.amazonaws.com/docfoundry-frontend:latest
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 3000
+          env:
+            - name: NEXT_PUBLIC_API_BASE
+              value: "http://REPLACE_WITH_BACKEND_LB"

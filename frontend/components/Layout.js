@@ -12,7 +12,7 @@ function Tab({ href, children }) {
   );
 }
 
-export default function Layout({ title, subtitle, children, right }) {
+export default function Layout({ title, subtitle, children }) {
   return (
     <>
       <header className="topbar">
@@ -21,12 +21,10 @@ export default function Layout({ title, subtitle, children, right }) {
             <div className="logo" aria-hidden="true" />
             <Link href="/">DocFoundry</Link>
           </div>
-          <nav className="nav" aria-label="primary">
-            <Tab href="/library">Library</Tab>
-            <Tab href="/upload">Upload</Tab>
-          </nav>
+          <div className="muted" style={{ fontSize: 12 }}>
+            Upload and parse your documents to uncover insights.
+          </div>
           <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
-            {right || null}
             <AuthWidget />
           </div>
         </div>

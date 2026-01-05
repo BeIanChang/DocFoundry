@@ -143,9 +143,70 @@ button, input, select, textarea{font:inherit}
   text-transform:uppercase;
   letter-spacing:.08em;
 }
+.treeIcon{
+  width:16px;
+  text-align:center;
+  font-size:13px;
+}
+.treeEditInput{
+  font-size:12px;
+  padding:4px 6px;
+  border-radius:6px;
+  border:1px solid var(--border);
+  min-width:140px;
+}
+
+.dropdownTrigger{
+  text-align:left;
+  cursor:pointer;
+}
+.dropdownMenu{
+  position:absolute;
+  top:44px;
+  left:0;
+  right:0;
+  background:#fff;
+  border:1px solid var(--border);
+  border-radius:10px;
+  box-shadow: var(--shadow);
+  padding:8px;
+  z-index:30;
+}
+.dropdownHeader{
+  display:flex;
+  justify-content:space-between;
+  align-items:center;
+  padding:4px 4px 8px;
+  font-size:12px;
+  color:var(--muted);
+}
+.dropdownItem{
+  display:flex;
+  align-items:center;
+  gap:8px;
+  padding:6px 6px;
+  border-radius:8px;
+  cursor:pointer;
+  font-size:12px;
+}
+.dropdownItem:hover{background:rgba(0,0,0,.03)}
+.dropdownLabel{
+  flex:1;
+}
 .treeActions{
-  margin-top:8px;
+  margin-top:0;
   display:flex;
   gap:8px;
   flex-wrap:wrap;
 }
+.iconBtn{
+  border:1px solid var(--border);
+  background:#fff;
+  border-radius:10px;
+  padding:6px 8px;
+  cursor:pointer;
+  font-size:14px;
+  line-height:1;
+}
+.iconBtn:hover{background:rgba(0,0,0,.03)}
+.iconBtn:disabled{opacity:.55;cursor:not-allowed}

@@ -48,3 +48,14 @@ class DocumentUpdate(BaseModel):
     title: Optional[str]
     status: Optional[str]
     metadata: Optional[Any]
+
+
+class DocumentProfileUpdate(BaseModel):
+    title: Optional[str]
+    file_name: Optional[str]
+    doc_type: Optional[str]
+    year_start: Optional[int]
+    year_end: Optional[int]
+    summary: Optional[str]
+    tags: Optional[Any]
+    meta: Optional[Any]

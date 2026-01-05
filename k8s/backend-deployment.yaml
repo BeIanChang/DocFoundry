@@ -1,0 +1,37 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: docfoundry-backend
+  labels:
+    app: docfoundry-backend
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: docfoundry-backend
+  template:
+    metadata:
+      labels:
+        app: docfoundry-backend
+    spec:
+      containers:
+        - name: backend
+          image: 502954288490.dkr.ecr.ca-central-1.amazonaws.com/docfoundry-backend:latest
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 8000
+          envFrom:
+            - configMapRef:
+                name: docfoundry-backend-config
+            - secretRef:
+                name: docfoundry-backend-secrets
+          volumeMounts:
+            - name: chroma-data
+              mountPath: /data/chroma
+            - name: uploads-data
+              mountPath: /data/uploads
+      volumes:
+        - name: chroma-data
+          emptyDir: {}
+        - name: uploads-data
+          emptyDir: {}

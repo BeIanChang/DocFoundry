@@ -30,7 +30,7 @@ def _safe_file_response(path_str: str) -> FileResponse:
 def get_tree(db: Session = Depends(get_session)):
     """
     Returns a VSCode-like nested tree:
-    projects -> knowledge_bases -> folders/documents -> versions (+ profile/text availability)
+    projects -> knowledge_bases -> folders/documents (+ profile/text availability)
     """
     projects = db.query(models.Project).order_by(models.Project.created_at.desc()).all()
     out = {"projects": []}
@@ -74,14 +74,15 @@ def get_tree(db: Session = Depends(get_session)):
                 else:
                     kb_item["folders"].append(node)
             for d in docs:
-                versions = (
+                v = (
                     db.query(models.DocumentVersion)
                     .filter(models.DocumentVersion.document_id == d.id)
                     .order_by(models.DocumentVersion.version_number.desc())
-                    .all()
+                    .first()
                 )
-                d_item = {"id": d.id, "title": d.title, "versions": []}
-                for v in versions:
+                has_profile = False
+                has_text = False
+                if v:
                     has_profile = (
                         db.query(models.DocumentProfile.id)
                         .filter(models.DocumentProfile.version_id == v.id)
@@ -94,17 +95,15 @@ def get_tree(db: Session = Depends(get_session)):
                         .first()
                         is not None
                     )
-                    d_item["versions"].append(
-                        {
-                            "id": v.id,
-                            "version_number": v.version_number,
-                            "file_name": v.file_name,
-                            "uploaded_at": v.uploaded_at.isoformat() if v.uploaded_at else None,
-                            "has_raw": bool(v.file_path),
-                            "has_text": has_text,
-                            "has_profile": has_profile,
-                        }
-                    )
+                d_item = {
+                    "id": d.id,
+                    "title": d.title,
+                    "file_name": v.file_name if v else None,
+                    "uploaded_at": v.uploaded_at.isoformat() if v and v.uploaded_at else None,
+                    "has_raw": bool(v.file_path) if v else False,
+                    "has_text": has_text,
+                    "has_profile": has_profile,
+                }
                 if d.folder_id and d.folder_id in folder_nodes:
                     folder_nodes[d.folder_id]["documents"].append(d_item)
                 else:
@@ -112,6 +111,57 @@ def get_tree(db: Session = Depends(get_session)):
             p_item["knowledge_bases"].append(kb_item)
         out["projects"].append(p_item)
     return out
+
+
+def _get_latest_version(doc_id: str, db: Session):
+    return (
+        db.query(models.DocumentVersion)
+        .filter(models.DocumentVersion.document_id == doc_id)
+        .order_by(models.DocumentVersion.version_number.desc())
+        .first()
+    )
+
+
+@router.get("/documents/{doc_id}", response_model=dict)
+def get_document_latest(doc_id: str, db: Session = Depends(get_session)):
+    doc = db.get(models.Document, doc_id)
+    if not doc:
+        raise HTTPException(status_code=404, detail="document not found")
+    v = _get_latest_version(doc_id, db)
+    if not v:
+        return {
+            "document_id": doc_id,
+            "version_id": None,
+            "file_name": None,
+            "file_path": None,
+            "uploaded_at": None,
+        }
+    return {
+        "document_id": doc_id,
+        "version_id": v.id,
+        "file_name": v.file_name,
+        "file_path": v.file_path,
+        "uploaded_at": v.uploaded_at.isoformat() if v.uploaded_at else None,
+    }
+
+
+@router.get("/documents/{doc_id}/raw")
+def get_document_raw(doc_id: str, db: Session = Depends(get_session)):
+    v = _get_latest_version(doc_id, db)
+    if not v or not v.file_path:
+        raise HTTPException(status_code=404, detail="no raw file stored for this document")
+    return _safe_file_response(v.file_path)
+
+
+@router.get("/documents/{doc_id}/text", response_model=dict)
+def get_document_text(doc_id: str, db: Session = Depends(get_session)):
+    v = _get_latest_version(doc_id, db)
+    if not v:
+        raise HTTPException(status_code=404, detail="document has no uploads")
+    t = db.query(models.DocumentVersionText).filter(models.DocumentVersionText.version_id == v.id).first()
+    if not t:
+        raise HTTPException(status_code=404, detail="no parsed text stored for this document")
+    return {"document_id": doc_id, "text": t.text}
 
 
 @router.get("/versions/{version_id}", response_model=dict)

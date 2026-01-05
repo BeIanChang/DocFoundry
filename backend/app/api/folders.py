@@ -38,6 +38,22 @@ def list_folders(kb_id: Optional[str] = None, db: Session = Depends(get_session)
     return [{"id": f.id, "kb_id": f.kb_id, "parent_id": f.parent_id, "name": f.name} for f in folders]
 
 
+@router.put("/{folder_id}")
+def update_folder(folder_id: str, payload: dict, db: Session = Depends(get_session)):
+    folder = db.get(models.Folder, folder_id)
+    if not folder:
+        raise HTTPException(status_code=404, detail="folder not found")
+    if "name" in payload:
+        name = (payload.get("name") or "").strip()
+        if not name:
+            raise HTTPException(status_code=400, detail="name cannot be empty")
+        folder.name = name
+    db.add(folder)
+    db.commit()
+    db.refresh(folder)
+    return {"id": folder.id, "kb_id": folder.kb_id, "parent_id": folder.parent_id, "name": folder.name}
+
+
 @router.delete("/{folder_id}")
 def delete_folder(folder_id: str, db: Session = Depends(get_session)):
     folder = db.get(models.Folder, folder_id)
@@ -52,4 +68,3 @@ def delete_folder(folder_id: str, db: Session = Depends(get_session)):
     db.delete(folder)
     db.commit()
     return {"status": "deleted", "folder_id": folder_id}
-
