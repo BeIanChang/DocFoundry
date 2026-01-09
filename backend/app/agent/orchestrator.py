@@ -46,6 +46,37 @@ class AgentOrchestrator:
         self.web_tool = WebSearchTool()
         self.answer_tool = answer_tool or AnswerTool()
 
+    def _tag_contexts(self, contexts: List[Any]) -> Tuple[List[Dict[str, Any]], List[AgentCitation]]:
+        counts = {"S": 0, "W": 0, "D": 0}
+        tagged: List[Dict[str, Any]] = []
+        cites: List[AgentCitation] = []
+        for c in contexts:
+            meta = getattr(c, "metadata", None) or {}
+            chunk_id = getattr(c, "chunk_id", None)
+            score = getattr(c, "score", None)
+            text = getattr(c, "text", "") or ""
+            if meta.get("source") == "web":
+                prefix = "W"
+            elif chunk_id:
+                prefix = "S"
+            elif meta.get("kind"):
+                prefix = "D"
+            else:
+                prefix = "S"
+            counts[prefix] += 1
+            tag = f"{prefix}{counts[prefix]}"
+            tagged.append({"chunk_id": chunk_id, "text": text, "score": score, "metadata": meta, "tag": tag})
+            cites.append(
+                AgentCitation(
+                    chunk_id=chunk_id,
+                    tag=tag,
+                    score=score,
+                    metadata=meta or {},
+                    text_preview=_preview(text),
+                )
+            )
+        return tagged, cites
+
     def run(self, req: AgentQueryRequest, *, db: Session, user: Dict[str, Any]) -> AgentQueryResponse:
         project_ids = [p for p in (req.project_ids or []) if isinstance(p, str)]
         if req.project_id and req.project_id not in project_ids:
@@ -77,6 +108,7 @@ class AgentOrchestrator:
         observations: List[Dict[str, Any]] = []
         routed_doc_ids: List[str] = []
         last_contexts = []
+        last_tagged_contexts: List[Dict[str, Any]] = []
         citations: List[AgentCitation] = []
         provider: Optional[str] = None
         model: Optional[str] = None
@@ -164,10 +196,7 @@ class AgentOrchestrator:
                     routed_doc_ids=routed_doc_ids,
                     db=db,
                 )
-                citations = [
-                    AgentCitation(chunk_id=c.chunk_id, score=c.score, metadata=c.metadata or {}, text_preview=_preview(c.text))
-                    for c in last_contexts
-                ]
+                last_tagged_contexts, citations = self._tag_contexts(last_contexts)
                 observations.append({"tool": "vector_search", "matches": len(last_contexts), "top": [{"chunk_id": c.chunk_id, "score": c.score} for c in last_contexts[:5]]})
                 continue
 
@@ -197,15 +226,7 @@ class AgentOrchestrator:
                     folder_id=scope.folder_id,
                 )
                 last_contexts = results
-                citations = [
-                    AgentCitation(
-                        chunk_id=r.chunk_id,
-                        score=r.score,
-                        metadata=r.metadata or {},
-                        text_preview=_preview(r.text),
-                    )
-                    for r in results
-                ]
+                last_tagged_contexts, citations = self._tag_contexts(results)
                 observations.append(
                     {
                         "tool": "keyword_search",
@@ -224,15 +245,7 @@ class AgentOrchestrator:
                     continue
                 results = self.web_tool.search(q, api_key=api_key, cse_id=cse_id, top_k=top_k)
                 last_contexts = results
-                citations = [
-                    AgentCitation(
-                        chunk_id=None,
-                        score=None,
-                        metadata=r.metadata or {},
-                        text_preview=_preview(r.text),
-                    )
-                    for r in results
-                ]
+                last_tagged_contexts, citations = self._tag_contexts(results)
                 observations.append(
                     {
                         "tool": "web_search",
@@ -246,7 +259,10 @@ class AgentOrchestrator:
                 if not last_contexts:
                     observations.append({"tool": "answer_with_context", "error": "no_contexts"})
                     continue
-                llm_contexts = [{"chunk_id": c.chunk_id, "text": c.text, "score": c.score, "metadata": c.metadata or {}} for c in last_contexts[:top_k]]
+                llm_contexts = last_tagged_contexts[:top_k] if last_tagged_contexts else [
+                    {"chunk_id": c.chunk_id, "text": c.text, "score": c.score, "metadata": c.metadata or {}}
+                    for c in last_contexts[:top_k]
+                ]
                 llm_resp = self.answer_tool.answer(req.message, llm_contexts)
                 answer_text = llm_resp.get("answer") or ""
                 provider = llm_resp.get("provider")
@@ -265,6 +281,11 @@ class AgentOrchestrator:
             model = model or None
             if not citations:
                 citations = [AgentCitation(chunk_id=None, metadata={"source": "planner", "kind": "step_limit"})]
+
+        if provider not in {"db", "planner"} and citations and not re.search(r"\[[SWD]\\d+\\]", answer_text or ""):
+            tags = [f"[{c.tag}]" for c in citations if c.tag]
+            if tags:
+                answer_text = f"{answer_text}\n\nSources: {' '.join(tags)}"
 
         # final verification
         verified, verify_note = self._verify(answer_text, citations)
@@ -327,7 +348,7 @@ class AgentOrchestrator:
                     .first()
                 )
             summary = (getattr(prof, "summary", None) or "").strip()
-            parts = [f"Selected document: {doc.title or '(untitled)'}", f"document_id: {doc.id}"]
+            parts = [f"Selected document: {doc.title or '(untitled)'} [D1]"]
             if getattr(prof, "doc_type", None):
                 parts.append(f"type: {prof.doc_type}")
             if getattr(prof, "year_start", None) or getattr(prof, "year_end", None):
@@ -339,6 +360,7 @@ class AgentOrchestrator:
             answer = "\n".join(parts)
             cite = AgentCitation(
                 chunk_id=None,
+                tag="D1",
                 score=None,
                 metadata={"source": "db", "kind": "document_profile", "document_id": doc.id, "version_id": getattr(ver, "id", None)},
                 text_preview=_preview(summary) if summary else None,
@@ -361,8 +383,9 @@ class AgentOrchestrator:
             cite = AgentCitation(chunk_id=None, metadata={"source": "db", "kind": "document_list", "kb_id": scope.kb_id, "count": 0})
             return answer, [cite]
 
-        lines = [f"Documents in KB {scope.kb_id} ({len(docs)}):"]
+        lines = [f"Here are {len(docs)} documents in this KB:"]
         cites: List[AgentCitation] = []
+        d_count = 0
         for d in docs[:50]:
             ver = (
                 db.query(models.DocumentVersion)
@@ -382,16 +405,19 @@ class AgentOrchestrator:
             tags = getattr(prof, "tags", None) or []
             summary = (getattr(prof, "summary", None) or "").strip()
             label = d.title or "(untitled)"
+            d_count += 1
+            tag = f"D{d_count}"
             suffix = []
             if doc_type:
                 suffix.append(doc_type)
             if tags:
-                suffix.append(",".join([str(t) for t in tags[:3]]))
+                suffix.append("tags: " + ", ".join([str(t) for t in tags[:3]]))
             extra = f" — {' · '.join(suffix)}" if suffix else ""
-            lines.append(f"- {label}{extra} (document_id={d.id})")
+            lines.append(f"- {label}{extra} [{tag}]")
             cites.append(
                 AgentCitation(
                     chunk_id=None,
+                    tag=tag,
                     score=None,
                     metadata={"source": "db", "kind": "document_profile", "document_id": d.id, "version_id": getattr(ver, "id", None)},
                     text_preview=_preview(summary) if summary else None,

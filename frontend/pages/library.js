@@ -108,6 +108,32 @@ function Bubble({ role, children }) {
   );
 }
 
+function renderWithCitations(text, citations, onOpen) {
+  const raw = String(text || "");
+  if (!raw) return raw;
+  const tagRegex = /(\[[SWD]\d+\])/g;
+  const isTag = /^\[[SWD]\d+\]$/;
+  const parts = raw.split(tagRegex);
+  const byTag = new Map((citations || []).map((c) => [c.tag ? `[${c.tag}]` : "", c]));
+  return parts.map((part, idx) => {
+    if (isTag.test(part)) {
+      const cite = byTag.get(part);
+      if (!cite) return part;
+      return (
+        <button
+          key={`${part}-${idx}`}
+          className="inlineCite"
+          onClick={() => onOpen?.(cite)}
+          type="button"
+        >
+          {part}
+        </button>
+      );
+    }
+    return <span key={`t-${idx}`}>{part}</span>;
+  });
+}
+
 function sanitizeAnswer(text) {
   if (!text) return "";
   const withoutIds = text
@@ -119,7 +145,7 @@ function sanitizeAnswer(text) {
 }
 
 export default function LibraryPage() {
-  const [apiBase, setApiBaseState] = useState("http://localhost:8000");
+  const [apiBase, setApiBaseState] = useState(() => getApiBase());
   const chunkIdFromUrl = useQueryParam("chunk_id");
   const documentIdFromUrl = useQueryParam("document_id");
 
@@ -285,6 +311,7 @@ export default function LibraryPage() {
     if (!selectedProjectIds.length && projects.length) {
       setSelectedProjectIds([projects[0].id]);
     }
+    return t;
   };
 
   const createProject = async () => {
@@ -296,6 +323,30 @@ export default function LibraryPage() {
       await refreshTree();
       setSelectedProjectId(proj.id || "");
       setSelectedProjectIds((ids) => (proj.id ? Array.from(new Set([...(ids || []), proj.id])) : ids));
+    } catch (e) {
+      setError(e?.message || String(e));
+    }
+  };
+
+  const deleteProject = async () => {
+    if (!selectedProjectId) return;
+    const ok = window.confirm("Delete this project and all its KBs/documents? This cannot be undone.");
+    if (!ok) return;
+    setError("");
+    try {
+      await apiFetch(apiBase, `/projects/${encodeURIComponent(selectedProjectId)}`, { method: "DELETE" });
+      setSelectedProjectId("");
+      setSelectedKbId("");
+      setSelectedDocId("");
+      setSelectedFolderId("");
+      const t = await refreshTree();
+      const remaining = (t?.projects || []).map((p) => p.id);
+      if (remaining.length) {
+        setSelectedProjectId(remaining[0]);
+        setSelectedProjectIds([remaining[0]]);
+      } else {
+        setSelectedProjectIds([]);
+      }
     } catch (e) {
       setError(e?.message || String(e));
     }
@@ -533,6 +584,20 @@ export default function LibraryPage() {
     setChatSessions((sessions) => sessions.map((s) => (s.id === id ? { ...s, name } : s)));
   };
 
+  const clearChatHistory = () => {
+    const current = chatSessions.find((s) => s.id === activeChatId);
+    if (!current) return;
+    const ok = window.confirm(`Clear all messages in "${current.name}"? This cannot be undone.`);
+    if (!ok) return;
+    setChatSessions((sessions) =>
+      sessions.map((s) =>
+        s.id === activeChatId
+          ? { ...s, messages: [{ role: "assistant", content: "Chat cleared. Ask anything to restart." }] }
+          : s
+      )
+    );
+  };
+
   const formattedParsedText = useMemo(() => {
     const raw = parsedText || "";
     const normalized = raw
@@ -605,9 +670,6 @@ export default function LibraryPage() {
               >
                 🗑️
               </button>
-              <button className="iconBtn" title="Refresh" onClick={() => refreshTree().catch(() => {})}>
-                ↻
-              </button>
             </div>
           </div>
           <input
@@ -623,194 +685,131 @@ export default function LibraryPage() {
             }}
           />
           <div style={{ marginTop: 12 }}>
-            {projectOptions.length ? (
-              <>
-                <label className="fieldLabel">Projects</label>
-                <div ref={projectMenuRef} style={{ position: "relative", display: "flex", gap: 8, alignItems: "center" }}>
-                  <button
-                    type="button"
-                    className="field dropdownTrigger"
-                    onClick={() => setProjectMenuOpen((v) => !v)}
-                  >
-                    {projectOptions.find((p) => p.id === selectedProjectId)?.name || "Select project"}
-                  </button>
-                  <button
-                    className="iconBtn"
-                    title="Rename project"
-                    onClick={() => {
-                      const current = projectOptions.find((p) => p.id === selectedProjectId);
-                      if (current) startRename("project", current.id, current.name);
-                    }}
-                  >
-                    ✎
-                  </button>
-                  <button className="iconBtn" title="New project" onClick={createProject}>
-                    ＋
-                  </button>
-                  {projectMenuOpen ? (
-                    <div className="dropdownMenu">
-                      <div className="dropdownHeader">
-                        <span>Projects</span>
-                        <button
-                          className="iconBtn"
-                          title="Select all"
-                          onClick={() => setSelectedProjectIds(projectOptions.map((p) => p.id))}
-                          disabled={!projectOptions.length}
-                        >
-                          All
-                        </button>
-                      </div>
-                      {projectOptions.map((p) => (
-                        <label key={p.id} className="dropdownItem">
-                          <input
-                            type="checkbox"
-                            checked={selectedProjectIds.includes(p.id)}
-                            onChange={(e) => {
-                              const checked = e.target.checked;
-                              setSelectedProjectIds((ids) => {
-                                if (checked) return Array.from(new Set([...(ids || []), p.id]));
-                                return (ids || []).filter((id) => id !== p.id);
-                              });
-                            }}
-                          />
-                          <span
-                            className="dropdownLabel"
-                            onClick={() => {
-                              setSelectedProjectId(p.id);
-                              setSelectedKbId("");
-                              setSelectedDocId("");
-                              setSelectedFolderId("");
-                              setSelectedProjectIds((ids) => (p.id ? Array.from(new Set([...(ids || []), p.id])) : ids));
-                              setProjectMenuOpen(false);
-                            }}
-                          >
-                            {p.name}
-                          </span>
-                        </label>
-                      ))}
-                    </div>
-                  ) : null}
-                </div>
-                {editTarget?.type === "project" ? (
-                  <div style={{ marginTop: 8 }}>
-                    <input
-                      className="field"
-                      value={editValue}
-                      onChange={(e) => setEditValue(e.target.value)}
-                      onKeyDown={(e) => {
-                        if (e.key === "Enter") saveRename();
-                        if (e.key === "Escape") cancelRename();
-                      }}
-                      onBlur={saveRename}
-                      autoFocus
-                    />
+            <label className="fieldLabel">Projects</label>
+            <div ref={projectMenuRef} style={{ position: "relative", display: "flex", gap: 8, alignItems: "center" }}>
+              <button
+                type="button"
+                className="field dropdownTrigger"
+                onClick={() => setProjectMenuOpen((v) => !v)}
+              >
+                {projectOptions.find((p) => p.id === selectedProjectId)?.name || (projectOptions.length ? "Select project" : "No projects yet")}
+              </button>
+              <button
+                className="iconBtn"
+                title="Rename project"
+                onClick={() => {
+                  const current = projectOptions.find((p) => p.id === selectedProjectId);
+                  if (current) startRename("project", current.id, current.name);
+                }}
+                disabled={!selectedProjectId}
+              >
+                ✎
+              </button>
+              <button className="iconBtn" title="Delete project" onClick={deleteProject} disabled={!selectedProjectId}>
+                🗑️
+              </button>
+              <button className="iconBtn" title="New project" onClick={createProject}>
+                ＋
+              </button>
+              {projectMenuOpen ? (
+                <div className="dropdownMenu">
+                  <div className="dropdownHeader">
+                    <span>Projects</span>
+                    <button
+                      className="iconBtn"
+                      title="Select all"
+                      onClick={() => setSelectedProjectIds(projectOptions.map((p) => p.id))}
+                      disabled={!projectOptions.length}
+                    >
+                      All
+                    </button>
                   </div>
-                ) : null}
-                <div style={{ marginTop: 12 }}>
-                  {(tree?.projects || [])
-                    .filter((p) => p.id === selectedProjectId)
-                    .map((p) =>
-                      (p.knowledge_bases || []).map((kb) => {
-                        const kbKey = `kb:${kb.id}`;
-                        const kbCollapsed = !!collapsed[kbKey];
-                        const kbSelected = selectedKbId === kb.id;
+                  {projectOptions.length ? (
+                    projectOptions.map((p) => (
+                      <label key={p.id} className="dropdownItem">
+                        <input
+                          type="checkbox"
+                          checked={selectedProjectIds.includes(p.id)}
+                          onChange={(e) => {
+                            const checked = e.target.checked;
+                            setSelectedProjectIds((ids) => {
+                              if (checked) return Array.from(new Set([...(ids || []), p.id]));
+                              return (ids || []).filter((id) => id !== p.id);
+                            });
+                          }}
+                        />
+                        <span
+                          className="dropdownLabel"
+                          onClick={() => {
+                            setSelectedProjectId(p.id);
+                            setSelectedKbId("");
+                            setSelectedDocId("");
+                            setSelectedFolderId("");
+                            setSelectedProjectIds((ids) => (p.id ? Array.from(new Set([...(ids || []), p.id])) : ids));
+                            setProjectMenuOpen(false);
+                          }}
+                        >
+                          {p.name}
+                        </span>
+                      </label>
+                    ))
+                  ) : (
+                    <div className="dropdownEmpty">No projects yet.</div>
+                  )}
+                </div>
+              ) : null}
+            </div>
+            {editTarget?.type === "project" ? (
+              <div style={{ marginTop: 8 }}>
+                <input
+                  className="field"
+                  value={editValue}
+                  onChange={(e) => setEditValue(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") saveRename();
+                    if (e.key === "Escape") cancelRename();
+                  }}
+                  onBlur={saveRename}
+                  autoFocus
+                />
+              </div>
+            ) : null}
+            <div style={{ marginTop: 12 }}>
+              {(tree?.projects || []).length ? (
+                (tree?.projects || [])
+                  .filter((p) => p.id === selectedProjectId)
+                  .map((p) =>
+                    (p.knowledge_bases || []).map((kb) => {
+                      const kbKey = `kb:${kb.id}`;
+                      const kbCollapsed = !!collapsed[kbKey];
+                      const kbSelected = selectedKbId === kb.id;
 
-                        const renderDoc = (d, depth) => {
-                          const dKey = `d:${d.id}`;
-                          const dCollapsed = !!collapsed[dKey];
-                          const dSelected = selectedDocId === d.id;
-                          const docLabel = d.file_name || d.title || "Untitled";
-                          const ext = d.file_name && d.file_name.includes(".") ? d.file_name.split(".").pop().toUpperCase() : null;
-                          const isEditing = editTarget?.type === "doc" && editTarget?.id === d.id;
-                          return (
-                            <TreeItem
-                              key={d.id}
-                              depth={depth}
-                              label={docLabel}
-                              selected={dSelected}
-                              icon="📄"
-                              meta={ext || undefined}
-                              collapsed={dCollapsed}
-                              onToggle={() => toggleCollapsed(dKey)}
-                              onClick={() => {
-                                setSelectedKbId(kb.id);
-                                setSelectedDocId(d.id);
-                                setSelectedFolderId("");
-                                openLink({ document_id: d.id, chunk_id: "" });
-                              }}
-                              onDoubleClick={() => startRename("doc", d.id, d.title || "")}
-                              editing={isEditing}
-                              editValue={isEditing ? editValue : ""}
-                              onEditChange={setEditValue}
-                              onEditKeyDown={(e) => {
-                                if (e.key === "Enter") saveRename();
-                                if (e.key === "Escape") cancelRename();
-                              }}
-                              onEditBlur={saveRename}
-                            >
-                              {null}
-                            </TreeItem>
-                          );
-                        };
-
-                        const renderFolder = (f, depth) => {
-                          const fKey = `f:${f.id}`;
-                          const fCollapsed = !!collapsed[fKey];
-                          const fSelected = selectedFolderId === f.id;
-                          const isEditing = editTarget?.type === "folder" && editTarget?.id === f.id;
-                          return (
-                            <TreeItem
-                              key={f.id}
-                              depth={depth}
-                              label={f.name}
-                              selected={fSelected}
-                              icon="📁"
-                              collapsed={fCollapsed}
-                              onToggle={() => toggleCollapsed(fKey)}
-                              meta="folder"
-                              onClick={() => {
-                                setSelectedKbId(kb.id);
-                                setSelectedDocId("");
-                                setSelectedFolderId(f.id);
-                              }}
-                              onDoubleClick={() => startRename("folder", f.id, f.name)}
-                              editing={isEditing}
-                              editValue={isEditing ? editValue : ""}
-                              onEditChange={setEditValue}
-                              onEditKeyDown={(e) => {
-                                if (e.key === "Enter") saveRename();
-                                if (e.key === "Escape") cancelRename();
-                              }}
-                              onEditBlur={saveRename}
-                            >
-                              {!fCollapsed
-                                ? [
-                                    ...(f.folders || []).map((child) => renderFolder(child, depth + 1)),
-                                    ...(f.documents || []).map((d) => renderDoc(d, depth + 1)),
-                                  ]
-                                : null}
-                            </TreeItem>
-                          );
-                        };
-
+                      const renderDoc = (d, depth) => {
+                        const dKey = `d:${d.id}`;
+                        const dCollapsed = !!collapsed[dKey];
+                        const dSelected = selectedDocId === d.id;
+                        const docLabel = d.file_name || d.title || "Untitled";
+                        const ext = d.file_name && d.file_name.includes(".") ? d.file_name.split(".").pop().toUpperCase() : null;
+                        const isEditing = editTarget?.type === "doc" && editTarget?.id === d.id;
                         return (
                           <TreeItem
-                            key={kb.id}
-                            depth={0}
-                            label={kb.name}
-                            selected={kbSelected}
-                            icon="🗂️"
-                            collapsed={kbCollapsed}
-                            onToggle={() => toggleCollapsed(kbKey)}
-                            meta="kb"
+                            key={d.id}
+                            depth={depth}
+                            label={docLabel}
+                            selected={dSelected}
+                            icon="📄"
+                            meta={ext || undefined}
+                            collapsed={dCollapsed}
+                            onToggle={() => toggleCollapsed(dKey)}
                             onClick={() => {
                               setSelectedKbId(kb.id);
-                              setSelectedDocId("");
+                              setSelectedDocId(d.id);
                               setSelectedFolderId("");
+                              openLink({ document_id: d.id, chunk_id: "" });
                             }}
-                            onDoubleClick={() => startRename("kb", kb.id, kb.name)}
-                            editing={editTarget?.type === "kb" && editTarget?.id === kb.id}
-                            editValue={editTarget?.type === "kb" && editTarget?.id === kb.id ? editValue : ""}
+                            onDoubleClick={() => startRename("doc", d.id, d.title || "")}
+                            editing={isEditing}
+                            editValue={isEditing ? editValue : ""}
                             onEditChange={setEditValue}
                             onEditKeyDown={(e) => {
                               if (e.key === "Enter") saveRename();
@@ -818,23 +817,92 @@ export default function LibraryPage() {
                             }}
                             onEditBlur={saveRename}
                           >
-                            {!kbCollapsed
+                            {null}
+                          </TreeItem>
+                        );
+                      };
+
+                      const renderFolder = (f, depth) => {
+                        const fKey = `f:${f.id}`;
+                        const fCollapsed = !!collapsed[fKey];
+                        const fSelected = selectedFolderId === f.id;
+                        const isEditing = editTarget?.type === "folder" && editTarget?.id === f.id;
+                        return (
+                          <TreeItem
+                            key={f.id}
+                            depth={depth}
+                            label={f.name}
+                            selected={fSelected}
+                            icon="📁"
+                            collapsed={fCollapsed}
+                            onToggle={() => toggleCollapsed(fKey)}
+                            meta="folder"
+                            onClick={() => {
+                              setSelectedKbId(kb.id);
+                              setSelectedDocId("");
+                              setSelectedFolderId(f.id);
+                            }}
+                            onDoubleClick={() => startRename("folder", f.id, f.name)}
+                            editing={isEditing}
+                            editValue={isEditing ? editValue : ""}
+                            onEditChange={setEditValue}
+                            onEditKeyDown={(e) => {
+                              if (e.key === "Enter") saveRename();
+                              if (e.key === "Escape") cancelRename();
+                            }}
+                            onEditBlur={saveRename}
+                          >
+                            {!fCollapsed
                               ? [
-                                  ...(kb.folders || []).map((f) => renderFolder(f, 1)),
-                                  ...(kb.documents || []).map((d) => renderDoc(d, 1)),
+                                  ...(f.folders || []).map((child) => renderFolder(child, depth + 1)),
+                                  ...(f.documents || []).map((d) => renderDoc(d, depth + 1)),
                                 ]
                               : null}
                           </TreeItem>
                         );
-                      })
-                    )}
+                      };
+
+                      return (
+                        <TreeItem
+                          key={kb.id}
+                          depth={0}
+                          label={kb.name}
+                          selected={kbSelected}
+                          icon="🗂️"
+                          collapsed={kbCollapsed}
+                          onToggle={() => toggleCollapsed(kbKey)}
+                          meta="kb"
+                          onClick={() => {
+                            setSelectedKbId(kb.id);
+                            setSelectedDocId("");
+                            setSelectedFolderId("");
+                          }}
+                          onDoubleClick={() => startRename("kb", kb.id, kb.name)}
+                          editing={editTarget?.type === "kb" && editTarget?.id === kb.id}
+                          editValue={editTarget?.type === "kb" && editTarget?.id === kb.id ? editValue : ""}
+                          onEditChange={setEditValue}
+                          onEditKeyDown={(e) => {
+                            if (e.key === "Enter") saveRename();
+                            if (e.key === "Escape") cancelRename();
+                          }}
+                          onEditBlur={saveRename}
+                        >
+                          {!kbCollapsed
+                            ? [
+                                ...(kb.folders || []).map((f) => renderFolder(f, 1)),
+                                ...(kb.documents || []).map((d) => renderDoc(d, 1)),
+                              ]
+                            : null}
+                        </TreeItem>
+                      );
+                    })
+                  )
+              ) : (
+                <div className="muted" style={{ marginTop: 10 }}>
+                  No projects yet.
                 </div>
-              </>
-            ) : (
-              <div className="muted" style={{ marginTop: 10 }}>
-                No projects yet. Use the + button to add one.
-              </div>
-            )}
+              )}
+            </div>
           </div>
         </div>
 
@@ -1116,6 +1184,9 @@ export default function LibraryPage() {
               >
                 ✎
               </button>
+              <button className="iconBtn" title="Clear chat history" onClick={clearChatHistory}>
+                🗑️
+              </button>
               <label style={{ display: "flex", gap: 8, alignItems: "center", fontSize: 12, color: "var(--muted)" }}>
                 <input type="checkbox" checked={showTrace} onChange={(e) => setShowTrace(e.target.checked)} />
                 Show trace
@@ -1164,9 +1235,27 @@ export default function LibraryPage() {
             {(chatSessions.find((s) => s.id === activeChatId)?.messages || []).map((m, idx) => {
               const steps = m?.meta?.steps;
               const runId = m?.meta?.run_id;
+              const citations = m?.meta?.citations || [];
               return (
                 <div key={idx}>
-                  <Bubble role={m.role}>{m.content}</Bubble>
+                  <Bubble role={m.role}>
+                    {m.role === "assistant"
+                      ? renderWithCitations(m.content, citations, (cite) => {
+                          const meta = cite.metadata || {};
+                          const docId = meta.document_id || "";
+                          const chunkId = cite.chunk_id || "";
+                          const isWeb = meta.source === "web" && meta.url;
+                          if (isWeb && meta.url) {
+                            window.open(meta.url, "_blank", "noreferrer");
+                            return;
+                          }
+                          openLink({
+                            chunk_id: chunkId || "",
+                            document_id: docId || "",
+                          });
+                        })
+                      : m.content}
+                  </Bubble>
                   {m.role === "assistant" && Array.isArray(m?.meta?.citations) && m.meta.citations.length ? (
                     <div style={{ marginTop: -2, marginBottom: 12, display: "flex", gap: 8, flexWrap: "wrap" }}>
                       {m.meta.citations.slice(0, 2).map((c, i) => {
@@ -1174,6 +1263,7 @@ export default function LibraryPage() {
                         const docId = meta.document_id || "";
                         const chunkId = c.chunk_id || "";
                         const isWeb = meta.source === "web" && meta.url;
+                        const label = c.tag ? `[${c.tag}]` : `Source ${i + 1}`;
                         return (
                           <button
                             key={`${chunkId || i}`}
@@ -1189,7 +1279,7 @@ export default function LibraryPage() {
                               });
                             }}
                           >
-                            Source {i + 1}
+                            {label}
                           </button>
                         );
                       })}

@@ -24,6 +24,7 @@ class AgentQueryRequest(BaseModel):
 
 class AgentCitation(BaseModel):
     chunk_id: Optional[str]
+    tag: Optional[str] = None
     score: Optional[float] = None
     metadata: Dict[str, Any] = Field(default_factory=dict)
     text_preview: Optional[str] = None

@@ -65,6 +65,16 @@ def delete_project(project_id: str, db=Depends(get_session)):
     proj = db.get(models.Project, project_id)
     if not proj:
         raise HTTPException(status_code=404, detail="project not found")
+    from app.api.kb import delete_kb
+    kbs = db.query(models.KnowledgeBase).filter(models.KnowledgeBase.project_id == project_id).all()
+    deleted_kbs = 0
+    for kb in kbs:
+        try:
+            delete_kb(kb.id, db=db)
+            deleted_kbs += 1
+        except Exception:
+            # best-effort delete in dev
+            pass
     db.delete(proj)
     db.commit()
-    return {"status": "deleted"}
+    return {"status": "deleted", "knowledge_bases_deleted": deleted_kbs}

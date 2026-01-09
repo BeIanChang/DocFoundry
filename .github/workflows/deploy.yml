@@ -1,0 +1,63 @@
+name: Deploy to EKS
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch: {}
+
+env:
+  AWS_REGION: ca-central-1
+  ECR_REGISTRY: 502954288490.dkr.ecr.ca-central-1.amazonaws.com
+  BACKEND_IMAGE: docfoundry-backend
+  FRONTEND_IMAGE: docfoundry-frontend
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and push backend image
+        uses: docker/build-push-action@v6
+        with:
+          context: ./backend
+          platforms: linux/amd64
+          push: true
+          tags: ${{ env.ECR_REGISTRY }}/${{ env.BACKEND_IMAGE }}:latest
+
+      - name: Build and push frontend image
+        uses: docker/build-push-action@v6
+        with:
+          context: ./frontend
+          platforms: linux/amd64
+          push: true
+          build-args: |
+            NEXT_PUBLIC_API_BASE=${{ secrets.NEXT_PUBLIC_API_BASE }}
+          tags: ${{ env.ECR_REGISTRY }}/${{ env.FRONTEND_IMAGE }}:latest
+
+      - name: Set up kubeconfig
+        run: |
+          mkdir -p ~/.kube
+          echo "${{ secrets.KUBECONFIG_DATA }}" | base64 --decode > ~/.kube/config
+
+      - name: Deploy to EKS
+        run: |
+          kubectl apply -f k8s/
+          kubectl rollout restart deployment/docfoundry-backend
+          kubectl rollout restart deployment/docfoundry-frontend

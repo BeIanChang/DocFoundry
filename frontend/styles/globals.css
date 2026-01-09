@@ -193,6 +193,11 @@ button, input, select, textarea{font:inherit}
 .dropdownLabel{
   flex:1;
 }
+.dropdownEmpty{
+  padding:8px;
+  font-size:12px;
+  color:var(--muted);
+}
 .treeActions{
   margin-top:0;
   display:flex;
@@ -210,3 +215,16 @@ button, input, select, textarea{font:inherit}
 }
 .iconBtn:hover{background:rgba(0,0,0,.03)}
 .iconBtn:disabled{opacity:.55;cursor:not-allowed}
+.inlineCite{
+  display:inline-flex;
+  align-items:center;
+  border:1px solid var(--orange-2);
+  background:#fff7f0;
+  color:var(--orange-2);
+  border-radius:999px;
+  padding:1px 6px;
+  font-size:11px;
+  line-height:1.2;
+  margin:0 2px;
+  cursor:pointer;
+}

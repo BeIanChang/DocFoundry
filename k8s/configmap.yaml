@@ -3,7 +3,7 @@ kind: ConfigMap
 metadata:
   name: docfoundry-backend-config
 data:
-  DATABASE_URL: "docfoundry.colsk26qapt3.us-east-1.rds.amazonaws.com"
+  DATABASE_URL: "postgresql://postgres:Zyytbibi929_@docfoundry-2.c1k4wk8c8cde.ca-central-1.rds.amazonaws.com:5432/postgres"
   CHROMA_DIR: "/data/chroma"
   UPLOAD_DIR: "/data/uploads"
   LLM_PROVIDER: "cerebras"

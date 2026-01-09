@@ -1,10 +1,26 @@
+import getConfig from "next/config";
+
+const runtimeApiBase = (() => {
+  try {
+    const config = getConfig();
+    return config?.publicRuntimeConfig?.apiBase || "";
+  } catch {
+    return "";
+  }
+})();
+const DEFAULT_API_BASE = runtimeApiBase || process.env.NEXT_PUBLIC_API_BASE || "http://localhost:8000";
+
 export function getApiBase() {
-  if (typeof window === "undefined") return "http://localhost:8000";
-  return window.localStorage.getItem("docfoundry_api_base") || "http://localhost:8000";
+  if (typeof window === "undefined") return DEFAULT_API_BASE;
+  const isLocalhost = window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1";
+  if (!isLocalhost) return DEFAULT_API_BASE;
+  return window.localStorage.getItem("docfoundry_api_base") || DEFAULT_API_BASE;
 }
 
 export function setApiBase(base) {
   if (typeof window === "undefined") return;
+  const isLocalhost = window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1";
+  if (!isLocalhost) return;
   window.localStorage.setItem("docfoundry_api_base", base);
   window.dispatchEvent(new Event("docfoundry_api_base_change"));
 }
@@ -33,4 +49,3 @@ export function decodeJwtPayload(token) {
     return null;
   }
 }
-

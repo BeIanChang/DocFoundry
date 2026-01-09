@@ -59,6 +59,27 @@ def _get_cerebras_api_key() -> str:
     return ""
 
 
+def _assign_context_tags(contexts: List[Dict]) -> List[Dict]:
+    counts = {"S": 0, "W": 0, "D": 0}
+    tagged: List[Dict] = []
+    for c in contexts:
+        meta = c.get("metadata") or {}
+        if meta.get("source") == "web":
+            prefix = "W"
+        elif c.get("chunk_id"):
+            prefix = "S"
+        elif meta.get("kind"):
+            prefix = "D"
+        else:
+            prefix = "S"
+        counts[prefix] += 1
+        tag = f"{prefix}{counts[prefix]}"
+        c2 = dict(c)
+        c2["tag"] = tag
+        tagged.append(c2)
+    return tagged
+
+
 def chat(
     messages: List[Dict[str, str]],
     *,
@@ -121,17 +142,26 @@ def generate_answer(query: str, contexts: List[Dict]) -> Dict:
     - provider 'stub' just echoes the context.
     - provider 'cerebras' calls Cerebras (OpenAI-compatible) chat completions.
     """
+    tagged_contexts = _assign_context_tags(contexts)
     provider = DEFAULT_PROVIDER
     if provider == "stub":
-        joined = "\n\n".join([c.get("text", "") for c in contexts])
+        joined = "\n\n".join([f"[{c.get('tag')}] {c.get('text', '')}" for c in tagged_contexts])
         answer = f"[stubbed answer] Query: {query}\nContext:\n{joined}"
         return {"answer": answer, "provider": provider}
     elif provider == "cerebras":
         model = DEFAULT_CEREBRAS_MODEL
-        prompt_context = "\n\n".join([c.get("text", "") for c in contexts])
+        prompt_context = "\n\n".join([f"[{c.get('tag')}] {c.get('text', '')}" for c in tagged_contexts])
+        sources = "\n".join([f"[{c.get('tag')}] {c.get('text', '')[:220]}" for c in tagged_contexts])
         messages = [
-            {"role": "system", "content": "You are a helpful assistant. Use the provided context to answer."},
-            {"role": "user", "content": f"Question: {query}\n\nContext:\n{prompt_context}"},
+            {
+                "role": "system",
+                "content": (
+                    "You are a helpful assistant. Use the provided context to answer. "
+                    "Whenever you use a source, include its tag inline like [S1] or [W1]. "
+                    "Use only the tags provided in Sources. Do not invent tags."
+                ),
+            },
+            {"role": "user", "content": f"Question: {query}\n\nSources:\n{sources}\n\nContext:\n{prompt_context}"},
         ]
         try:
             resp = chat(messages, model=model)

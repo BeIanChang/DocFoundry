@@ -22,4 +22,4 @@ spec:
             - containerPort: 3000
           env:
             - name: NEXT_PUBLIC_API_BASE
-              value: "http://REPLACE_WITH_BACKEND_LB"
+              value: "http://aecf0e97fd5304d68916ac01cddf0976-1652161137.ca-central-1.elb.amazonaws.com"

@@ -32,7 +32,7 @@ async function apiFetch(base, path, { method = "GET", token, body, isForm } = {}
 }
 
 export default function UploadPage() {
-  const [apiBase, setApiBaseState] = useState("http://localhost:8000");
+  const [apiBase, setApiBaseState] = useState(() => getApiBase());
 
   const [projects, setProjects] = useState([]);
   const [kbs, setKbs] = useState([]);
