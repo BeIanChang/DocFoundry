@@ -1,29 +1,20 @@
 import hashlib
 import os
 import struct
-import threading
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
-# Disable Chroma telemetry by default (avoids noisy PostHog version mismatches in dev).
-os.environ.setdefault("ANONYMIZED_TELEMETRY", "False")
-os.environ.setdefault("CHROMA_TELEMETRY", "FALSE")
-os.environ.setdefault("POSTHOG_DISABLED", "1")
+from sqlalchemy import text
+from sqlalchemy.engine import Engine
 
-try:
-    import chromadb  # type: ignore
-except Exception:  # pragma: no cover
-    chromadb = None
+from app.db.session import get_engine
 
-CHROMA_DIR = os.environ.get("CHROMA_DIR", "./chroma_db")
 EMBED_MODEL_NAME = os.environ.get("EMBED_MODEL", "all-MiniLM-L6-v2")
 EMBED_PROVIDER = os.environ.get("EMBED_PROVIDER", "auto").strip().lower()
 FALLBACK_EMBED_DIM = int(os.environ.get("EMBED_DIM", "384"))
 
-_client = None
-_collection = None
 _embedder = None
 _embedder_kind = None
-_write_lock = threading.Lock()
+_schema_ready = False
 
 
 class _HashEmbedder:
@@ -51,17 +42,6 @@ def _hash_embed(text: str, dim: int) -> List[float]:
     return out
 
 
-def _get_collection():
-    global _client, _collection
-    if _collection is not None:
-        return _collection
-    if chromadb is None:
-        raise RuntimeError("chromadb is not available (install backend requirements)")
-    _client = chromadb.PersistentClient(path=CHROMA_DIR)
-    _collection = _client.get_or_create_collection("documents")
-    return _collection
-
-
 def _get_embedder():
     global _embedder, _embedder_kind
     if _embedder is not None:
@@ -84,23 +64,106 @@ def _get_embedder():
     return _embedder
 
 
+def _ensure_schema(engine: Engine):
+    global _schema_ready
+    if _schema_ready:
+        return
+    if engine.dialect.name != "postgresql":
+        raise RuntimeError("pgvector requires a PostgreSQL database")
+    with engine.begin() as conn:
+        try:
+            conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
+        except Exception as exc:
+            raise RuntimeError(f"failed to enable pgvector extension: {exc}") from exc
+        conn.execute(
+            text(
+                """
+                CREATE TABLE IF NOT EXISTS vector_embeddings (
+                    chunk_id TEXT PRIMARY KEY,
+                    kb_id TEXT,
+                    document_id TEXT,
+                    metadata JSONB,
+                    embedding VECTOR(:dim)
+                )
+                """
+            ),
+            {"dim": FALLBACK_EMBED_DIM},
+        )
+        conn.execute(text("CREATE INDEX IF NOT EXISTS vector_embeddings_kb_idx ON vector_embeddings (kb_id)"))
+        conn.execute(text("CREATE INDEX IF NOT EXISTS vector_embeddings_doc_idx ON vector_embeddings (document_id)"))
+    _schema_ready = True
+
+
+def _build_filters(
+    kb_id: Optional[str],
+    kb_ids: Optional[List[str]],
+    document_id: Optional[str],
+    document_ids: Optional[List[str]],
+) -> Tuple[str, Dict[str, object]]:
+    clauses = []
+    params: Dict[str, object] = {}
+    if kb_id:
+        clauses.append("ve.kb_id = :kb_id")
+        params["kb_id"] = kb_id
+    elif kb_ids:
+        clauses.append("ve.kb_id = ANY(:kb_ids)")
+        params["kb_ids"] = kb_ids
+    if document_id:
+        clauses.append("ve.document_id = :document_id")
+        params["document_id"] = document_id
+    elif document_ids:
+        clauses.append("ve.document_id = ANY(:document_ids)")
+        params["document_ids"] = document_ids
+    if not clauses:
+        return "", params
+    return "WHERE " + " AND ".join(clauses), params
+
+
 def add_documents(docs: List[Dict]):
     """
-    docs: list of {id: str, text: str, metadata: dict} — add to chroma.
+    docs: list of {id: str, text: str, metadata: dict} — add to pgvector.
     metadata is used for filtering (e.g., kb_id, document_id, version_id).
     """
     if not docs:
         return []
-    collection = _get_collection()
+    engine = get_engine()
+    _ensure_schema(engine)
     embedder = _get_embedder()
-    ids = [d['id'] for d in docs]
-    texts = [d['text'] for d in docs]
-    metadata = [d.get('metadata') or {} for d in docs]
+    ids = [d["id"] for d in docs]
+    texts = [d["text"] for d in docs]
+    metas = [d.get("metadata") or {} for d in docs]
     embeddings = embedder.encode(texts, show_progress_bar=False)
     if hasattr(embeddings, "tolist"):
         embeddings = embeddings.tolist()
-    with _write_lock:
-        collection.add(ids=ids, documents=texts, embeddings=embeddings, metadatas=metadata)
+    rows = []
+    for idx, cid in enumerate(ids):
+        meta = metas[idx] or {}
+        emb = embeddings[idx]
+        emb_str = "[" + ",".join(f"{x:.6f}" for x in emb) + "]"
+        rows.append(
+            {
+                "chunk_id": cid,
+                "kb_id": meta.get("kb_id"),
+                "document_id": meta.get("document_id"),
+                "metadata": meta,
+                "embedding": emb_str,
+            }
+        )
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                """
+                INSERT INTO vector_embeddings (chunk_id, kb_id, document_id, metadata, embedding)
+                VALUES (:chunk_id, :kb_id, :document_id, :metadata, CAST(:embedding AS vector))
+                ON CONFLICT (chunk_id) DO UPDATE
+                SET kb_id = EXCLUDED.kb_id,
+                    document_id = EXCLUDED.document_id,
+                    metadata = EXCLUDED.metadata,
+                    embedding = EXCLUDED.embedding
+                """
+            ),
+            rows,
+        )
     return ids
 
 
@@ -113,31 +176,32 @@ def query_documents(
     document_ids: Optional[List[str]] = None,
 ):
     """Return top matches; optionally filter by kb_id and/or document_id."""
-    collection = _get_collection()
+    engine = get_engine()
+    _ensure_schema(engine)
     embedder = _get_embedder()
     embeddings = embedder.encode([query], show_progress_bar=False)
     if hasattr(embeddings, "tolist"):
         embeddings = embeddings.tolist()
     emb = embeddings[0]
-    filters = []
-    if kb_id:
-        filters.append({"kb_id": kb_id})
-    elif kb_ids:
-        filters.append({"kb_id": {"$in": kb_ids}})
-    if document_id:
-        filters.append({"document_id": document_id})
-    elif document_ids:
-        filters.append({"document_id": {"$in": document_ids}})
-    # Chroma (new API) expects a single logical operator; use $and when multiple filters
-    where = None
-    if len(filters) == 1:
-        where = filters[0]
-    elif len(filters) > 1:
-        where = {"$and": filters}
-
-    results = collection.query(query_embeddings=[emb], n_results=n_results, where=where)
-    # results is a dict with ids/documents/scores/metadatas
-    return results
+    emb_str = "[" + ",".join(f"{x:.6f}" for x in emb) + "]"
+    where_sql, params = _build_filters(kb_id, kb_ids, document_id, document_ids)
+    params["query_embedding"] = emb_str
+    params["limit"] = max(1, int(n_results))
+    sql = f"""
+        SELECT ve.chunk_id, c.text, ve.metadata, (ve.embedding <=> CAST(:query_embedding AS vector)) AS distance
+        FROM vector_embeddings ve
+        JOIN chunks c ON c.id = ve.chunk_id
+        {where_sql}
+        ORDER BY distance ASC
+        LIMIT :limit
+    """
+    with engine.begin() as conn:
+        rows = conn.execute(text(sql), params).fetchall()
+    ids = [r[0] for r in rows]
+    documents = [r[1] for r in rows]
+    metadatas = [r[2] or {} for r in rows]
+    distances = [float(r[3]) if r[3] is not None else None for r in rows]
+    return {"ids": [ids], "documents": [documents], "metadatas": [metadatas], "distances": [distances]}
 
 
 def embedder_info() -> Dict[str, Optional[str]]:
@@ -150,10 +214,11 @@ def embedder_info() -> Dict[str, Optional[str]]:
 
 
 def delete_documents(ids: List[str]) -> int:
-    """Best-effort delete by IDs from Chroma."""
+    """Best-effort delete by IDs from pgvector."""
     if not ids:
         return 0
-    collection = _get_collection()
-    with _write_lock:
-        collection.delete(ids=ids)
+    engine = get_engine()
+    _ensure_schema(engine)
+    with engine.begin() as conn:
+        conn.execute(text("DELETE FROM vector_embeddings WHERE chunk_id = ANY(:ids)"), {"ids": ids})
     return len(ids)

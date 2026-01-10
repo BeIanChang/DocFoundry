@@ -1,4 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import Layout from "../components/Layout";
 import { getApiBase, getToken } from "../components/auth";
 
@@ -8,6 +10,15 @@ function pretty(obj) {
   } catch {
     return String(obj);
   }
+}
+
+function injectCitationLinks(text) {
+  const raw = String(text || "");
+  if (!raw) return "";
+  return raw.replace(/\[([SWD]\d+(?:\s*,\s*[SWD]\d+)*)\]/g, (_, inner) => {
+    const tags = inner.split(/\s*,\s*/);
+    return tags.map((t) => `[${t}](cite:${t})`).join(" ");
+  });
 }
 
 async function apiFetch(base, path, { method = "GET", body, token, isForm } = {}) {
@@ -108,30 +119,36 @@ function Bubble({ role, children }) {
   );
 }
 
-function renderWithCitations(text, citations, onOpen) {
-  const raw = String(text || "");
-  if (!raw) return raw;
-  const tagRegex = /(\[[SWD]\d+\])/g;
-  const isTag = /^\[[SWD]\d+\]$/;
-  const parts = raw.split(tagRegex);
-  const byTag = new Map((citations || []).map((c) => [c.tag ? `[${c.tag}]` : "", c]));
-  return parts.map((part, idx) => {
-    if (isTag.test(part)) {
-      const cite = byTag.get(part);
-      if (!cite) return part;
-      return (
-        <button
-          key={`${part}-${idx}`}
-          className="inlineCite"
-          onClick={() => onOpen?.(cite)}
-          type="button"
-        >
-          {part}
-        </button>
-      );
-    }
-    return <span key={`t-${idx}`}>{part}</span>;
-  });
+function renderMarkdownWithCitations(text, citations, onOpen) {
+  const byTag = new Map((citations || []).map((c) => [c.tag || "", c]));
+  const markdown = injectCitationLinks(text);
+  return (
+    <ReactMarkdown
+      remarkPlugins={[remarkGfm]}
+      className="chatMarkdown"
+      components={{
+        a: ({ href, children }) => {
+          if (href && href.startsWith("cite:")) {
+            const tag = href.replace("cite:", "");
+            const cite = byTag.get(tag);
+            if (!cite) return <span>{children}</span>;
+            return (
+              <button className="inlineCite" type="button" onClick={() => onOpen?.(cite)}>
+                {tag}
+              </button>
+            );
+          }
+          return (
+            <a href={href} target="_blank" rel="noreferrer">
+              {children}
+            </a>
+          );
+        },
+      }}
+    >
+      {markdown}
+    </ReactMarkdown>
+  );
 }
 
 function sanitizeAnswer(text) {
@@ -139,6 +156,11 @@ function sanitizeAnswer(text) {
   const withoutIds = text
     .replace(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi, "")
     .replace(/\b(document_id|kb_id|project_id|chunk_id|version_id|doc_id)\s*[:=]\s*[\w-]+/gi, "")
+    .replace(/Sources?\s*[:：]\s*(\[[SWD]\d+\]\s*)+/gi, "")
+    .replace(/Sources?\s*[:：]\s*([SWD]\d+\s*)+/gi, "")
+    .replace(/\[\[([SWD]\d+)\]\]/g, "[$1]")
+    .replace(/([SWD]\d+)(?=[SWD]\d+)/g, "$1 ")
+    .replace(/\b([SWD]\d+)\b/g, "[$1]")
     .replace(/\s{2,}/g, " ")
     .replace(/\n{3,}/g, "\n\n");
   return withoutIds.trim();
@@ -1124,7 +1146,7 @@ export default function LibraryPage() {
           </div>
         </div>
 
-        <div className="card" style={{ padding: 14, display: "flex", flexDirection: "column", minHeight: "70vh" }}>
+        <div className="card" style={{ padding: 14, display: "flex", flexDirection: "column", minHeight: "70vh", height: "72vh", maxHeight: "72vh", overflow: "hidden" }}>
           <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "center" }}>
             <div style={{ fontWeight: 800 }}>Agent Chat</div>
           </div>
@@ -1240,7 +1262,7 @@ export default function LibraryPage() {
                 <div key={idx}>
                   <Bubble role={m.role}>
                     {m.role === "assistant"
-                      ? renderWithCitations(m.content, citations, (cite) => {
+                      ? renderMarkdownWithCitations(m.content, citations, (cite) => {
                           const meta = cite.metadata || {};
                           const docId = meta.document_id || "";
                           const chunkId = cite.chunk_id || "";
@@ -1263,14 +1285,14 @@ export default function LibraryPage() {
                         const docId = meta.document_id || "";
                         const chunkId = c.chunk_id || "";
                         const isWeb = meta.source === "web" && meta.url;
-                        const label = c.tag ? `[${c.tag}]` : `Source ${i + 1}`;
+                        const label = c.tag ? c.tag : `Source ${i + 1}`;
                         return (
                           <button
                             key={`${chunkId || i}`}
                             className="pill"
                             onClick={() => {
                               if (isWeb && meta.url) {
-                                window.open(meta.url, "_blank", "noreferrer");
+                                window.location.assign(meta.url);
                                 return;
                               }
                               openLink({

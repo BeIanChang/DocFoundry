@@ -1,6 +1,7 @@
-from fastapi import FastAPI, UploadFile, File, HTTPException
+from fastapi import FastAPI, UploadFile, File, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+import traceback
 import tempfile
 import os
 from dotenv import load_dotenv
@@ -41,7 +42,28 @@ def startup_db():
     # Ensure any new tables (not yet in migrations) exist in dev.
     models.Base.metadata.create_all(bind=engine)
 
-app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+
+@app.middleware("http")
+async def log_requests(request: Request, call_next):
+    print(f"[req] {request.method} {request.url.path}", flush=True)
+    response = await call_next(request)
+    print(f"[res] {request.method} {request.url.path} -> {response.status_code}", flush=True)
+    return response
+
+
+@app.exception_handler(Exception)
+async def unhandled_exception_handler(request: Request, exc: Exception):
+    print(f"[error] {request.method} {request.url.path} -> {exc}", flush=True)
+    traceback.print_exc()
+    return JSONResponse(status_code=500, content={"detail": "Internal Server Error"})
 
 # include API routers
 from app.api.kb import router as kb_router

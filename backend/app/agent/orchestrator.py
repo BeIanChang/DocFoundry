@@ -10,10 +10,11 @@ from sqlalchemy.orm import Session
 
 from app.agent.schemas import AgentCitation, AgentQueryRequest, AgentQueryResponse
 import os
+from types import SimpleNamespace
 from app.agent.tools import AnswerTool, KeywordSearchTool, VectorSearchTool, WebSearchTool
 from app.agent.planner import plan_next_step
 from app.db import models
-from app.embeddings.llm import chat
+from app.embeddings.llm import chat, normalize_citation_tags
 
 
 @dataclass(frozen=True)
@@ -48,8 +49,7 @@ class AgentOrchestrator:
 
     def _tag_contexts(self, contexts: List[Any]) -> Tuple[List[Dict[str, Any]], List[AgentCitation]]:
         counts = {"S": 0, "W": 0, "D": 0}
-        tagged: List[Dict[str, Any]] = []
-        cites: List[AgentCitation] = []
+        grouped: Dict[tuple, Dict[str, Any]] = {}
         for c in contexts:
             meta = getattr(c, "metadata", None) or {}
             chunk_id = getattr(c, "chunk_id", None)
@@ -57,25 +57,78 @@ class AgentOrchestrator:
             text = getattr(c, "text", "") or ""
             if meta.get("source") == "web":
                 prefix = "W"
-            elif chunk_id:
-                prefix = "S"
+                key = (prefix, meta.get("url") or meta.get("title") or chunk_id or text[:40])
             elif meta.get("kind"):
                 prefix = "D"
+                key = (prefix, meta.get("document_id") or chunk_id or text[:40])
             else:
                 prefix = "S"
+                key = (prefix, meta.get("document_id") or chunk_id or text[:40])
+            entry = grouped.get(key)
+            if not entry:
+                grouped[key] = {
+                    "chunk_id": chunk_id,
+                    "score": score,
+                    "metadata": meta,
+                    "texts": [text],
+                }
+            else:
+                if len(entry["texts"]) < 2 and text:
+                    entry["texts"].append(text)
+
+        tagged: List[Dict[str, Any]] = []
+        cites: List[AgentCitation] = []
+        for (prefix, _), entry in grouped.items():
             counts[prefix] += 1
             tag = f"{prefix}{counts[prefix]}"
-            tagged.append({"chunk_id": chunk_id, "text": text, "score": score, "metadata": meta, "tag": tag})
+            combined_text = "\n\n".join([t for t in entry.get("texts", []) if t])
+            tagged.append(
+                {
+                    "chunk_id": entry.get("chunk_id"),
+                    "text": combined_text,
+                    "score": entry.get("score"),
+                    "metadata": entry.get("metadata") or {},
+                    "tag": tag,
+                }
+            )
             cites.append(
                 AgentCitation(
-                    chunk_id=chunk_id,
+                    chunk_id=entry.get("chunk_id"),
                     tag=tag,
-                    score=score,
-                    metadata=meta or {},
-                    text_preview=_preview(text),
+                    score=entry.get("score"),
+                    metadata=entry.get("metadata") or {},
+                    text_preview=_preview(combined_text),
                 )
             )
         return tagged, cites
+
+    def _answer_from_retrieval(
+        self,
+        query: str,
+        *,
+        scope: AgentScope,
+        top_k: int,
+        routed_doc_ids: List[str],
+        db: Session,
+    ) -> Tuple[str, List[AgentCitation], Optional[str], Optional[str]]:
+        last_contexts = self._retrieve(
+            query,
+            top_k=top_k,
+            kb_id=scope.kb_id,
+            project_ids=scope.project_ids,
+            folder_id=scope.folder_id,
+            document_id=scope.document_id,
+            routed_doc_ids=routed_doc_ids,
+            db=db,
+        )
+        if not last_contexts:
+            return "", [], None, None
+        tagged, citations = self._tag_contexts(last_contexts)
+        llm_resp = self.answer_tool.answer(query, tagged[:top_k])
+        answer_text = llm_resp.get("answer") or ""
+        provider = llm_resp.get("provider")
+        model = llm_resp.get("model")
+        return answer_text, citations, provider, model
 
     def run(self, req: AgentQueryRequest, *, db: Session, user: Dict[str, Any]) -> AgentQueryResponse:
         project_ids = [p for p in (req.project_ids or []) if isinstance(p, str)]
@@ -109,15 +162,28 @@ class AgentOrchestrator:
         routed_doc_ids: List[str] = []
         last_contexts = []
         last_tagged_contexts: List[Dict[str, Any]] = []
+        last_citations: List[AgentCitation] = []
         citations: List[AgentCitation] = []
         provider: Optional[str] = None
         model: Optional[str] = None
         answer_text: str = ""
 
+        if scope.document_id and not scope.kb_id:
+            doc = db.get(models.Document, scope.document_id)
+            if doc and doc.kb_id:
+                scope.kb_id = doc.kb_id
         max_steps = max(1, int(req.max_steps or 20))
         top_k = max(1, int(req.top_k or 5))
 
         for i in range(1, max_steps + 1):
+            if self._should_break_loop(observations, last_tagged_contexts):
+                llm_resp = self.answer_tool.answer(req.message, last_tagged_contexts[:top_k])
+                answer_text = llm_resp.get("answer") or ""
+                provider = llm_resp.get("provider")
+                model = llm_resp.get("model")
+                citations = last_citations or citations
+                observations.append({"tool": "answer_with_context", "mode": "loop_break"})
+                break
             plan = plan_next_step(
                 user_message=req.message,
                 scope=scope.to_json(),
@@ -141,24 +207,68 @@ class AgentOrchestrator:
                 model = None
                 citations = [AgentCitation(chunk_id=None, metadata={"source": "planner", "kind": "final"})]
                 break
+            if action == "answer_with_context" and plan.args.get("answer"):
+                answer_text = normalize_citation_tags(str(plan.args.get("answer") or ""))
+                provider = "planner"
+                model = None
+                if not citations and last_citations:
+                    citations = last_citations
+                if not citations:
+                    citations = [AgentCitation(chunk_id=None, metadata={"source": "planner", "kind": "final"})]
+                observations.append({"tool": "answer_with_context", "mode": "planner_answer"})
+                break
 
             if action == "list_documents":
-                answer_text, citations = self._answer_list_documents(req.message, scope=scope, db=db)
-                provider = "db"
-                model = None
-                observations.append({"tool": "list_documents", "count": len(citations)})
-                break
+                list_answer, list_citations, contexts = self._answer_list_documents(req.message, scope=scope, db=db)
+                if contexts:
+                    last_contexts = contexts
+                    last_tagged_contexts, citations = self._tag_contexts(contexts)
+                    last_citations = citations
+                    doc_index = [
+                        {"tag": c.tag, "document_id": (c.metadata or {}).get("document_id")}
+                        for c in citations
+                        if c.tag and (c.metadata or {}).get("document_id")
+                    ]
+                else:
+                    doc_index = []
+                observations.append(
+                    {
+                        "tool": "list_documents",
+                        "count": len(list_citations),
+                        "context_ready": bool(contexts),
+                        "doc_index": doc_index,
+                        "preview": _preview(list_answer, 300),
+                    }
+                )
+                continue
 
             if action == "get_document_profile":
-                # Force profile view for selected doc; if none selected, fall back to listing
-                if scope.document_id:
-                    answer_text, citations = self._answer_list_documents(req.message, scope=scope, db=db)
+                doc_arg = plan.args.get("document_id")
+                resolved_doc_id = self._resolve_doc_id_arg(doc_arg, last_citations)
+                if resolved_doc_id:
+                    temp_scope = AgentScope(
+                        project_id=scope.project_id,
+                        project_ids=scope.project_ids,
+                        folder_id=scope.folder_id,
+                        kb_id=scope.kb_id,
+                        document_id=resolved_doc_id,
+                    )
+                    list_answer, list_citations, contexts = self._answer_list_documents(req.message, scope=temp_scope, db=db)
                 else:
-                    answer_text, citations = self._answer_list_documents(req.message, scope=scope, db=db)
-                provider = "db"
-                model = None
-                observations.append({"tool": "get_document_profile"})
-                break
+                    list_answer, list_citations, contexts = self._answer_list_documents(req.message, scope=scope, db=db)
+                if contexts:
+                    last_contexts = contexts
+                    last_tagged_contexts, citations = self._tag_contexts(contexts)
+                    last_citations = citations
+                observations.append(
+                    {
+                        "tool": "get_document_profile",
+                        "count": len(list_citations),
+                        "context_ready": bool(contexts),
+                        "preview": _preview(list_answer, 300),
+                    }
+                )
+                continue
 
             if action == "route_documents":
                 if scope.document_id:
@@ -168,6 +278,7 @@ class AgentOrchestrator:
                     observations.append({"tool": "route_documents", "skipped": True, "reason": "kb_id is missing"})
                     continue
                 routed_doc_ids = self._route_documents(req.message, kb_id=scope.kb_id, db=db)
+                routed_doc_ids = [d for d in routed_doc_ids if re.match(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", d)]
                 observations.append({"tool": "route_documents", "picked": routed_doc_ids})
                 continue
 
@@ -197,7 +308,15 @@ class AgentOrchestrator:
                     db=db,
                 )
                 last_tagged_contexts, citations = self._tag_contexts(last_contexts)
+                last_citations = citations
                 observations.append({"tool": "vector_search", "matches": len(last_contexts), "top": [{"chunk_id": c.chunk_id, "score": c.score} for c in last_contexts[:5]]})
+                if last_contexts:
+                    llm_resp = self.answer_tool.answer(req.message, last_tagged_contexts[:top_k])
+                    answer_text = llm_resp.get("answer") or ""
+                    provider = llm_resp.get("provider")
+                    model = llm_resp.get("model")
+                    observations.append({"tool": "answer_with_context", "provider": provider, "model": model})
+                    break
                 continue
 
             if action == "keyword_search":
@@ -227,6 +346,9 @@ class AgentOrchestrator:
                 )
                 last_contexts = results
                 last_tagged_contexts, citations = self._tag_contexts(results)
+                last_citations = citations
+                last_citations = citations
+                last_citations = citations
                 observations.append(
                     {
                         "tool": "keyword_search",
@@ -234,6 +356,13 @@ class AgentOrchestrator:
                         "top": [{"chunk_id": r.chunk_id, "score": r.score, "matches": r.matches[:5]} for r in results[:5]],
                     }
                 )
+                if results:
+                    llm_resp = self.answer_tool.answer(req.message, last_tagged_contexts[:top_k])
+                    answer_text = llm_resp.get("answer") or ""
+                    provider = llm_resp.get("provider")
+                    model = llm_resp.get("model")
+                    observations.append({"tool": "answer_with_context", "provider": provider, "model": model})
+                    break
                 continue
 
             if action == "web_search":
@@ -253,6 +382,13 @@ class AgentOrchestrator:
                         "top": [{"title": r.metadata.get("title"), "url": r.metadata.get("url")} for r in results[:5]],
                     }
                 )
+                if results:
+                    llm_resp = self.answer_tool.answer(req.message, last_tagged_contexts[:top_k])
+                    answer_text = llm_resp.get("answer") or ""
+                    provider = llm_resp.get("provider")
+                    model = llm_resp.get("model")
+                    observations.append({"tool": "answer_with_context", "provider": provider, "model": model})
+                    break
                 continue
 
             if action == "answer_with_context":
@@ -286,6 +422,7 @@ class AgentOrchestrator:
             tags = [f"[{c.tag}]" for c in citations if c.tag]
             if tags:
                 answer_text = f"{answer_text}\n\nSources: {' '.join(tags)}"
+        answer_text = normalize_citation_tags(answer_text)
 
         # final verification
         verified, verify_note = self._verify(answer_text, citations)
@@ -327,12 +464,28 @@ class AgentOrchestrator:
             return "list_documents"
         return "answer"
 
-    def _answer_list_documents(self, message: str, *, scope: AgentScope, db: Session) -> Tuple[str, List[AgentCitation]]:
+    def _is_list_intent(self, message: str) -> bool:
+        q = (message or "").strip().lower()
+        if not q:
+            return False
+        return bool(re.search(r"\b(list|show|what are|what's)\b.*\b(documents|docs)\b", q) or re.search(r"\b(documents|docs)\b.*\b(list|show)\b", q))
+
+    def _is_profile_intent(self, message: str) -> bool:
+        q = (message or "").strip().lower()
+        if not q:
+            return False
+        return bool(re.search(r"\b(profile|details|metadata|summary|describe|introduce|overview|about)\b", q))
+
+    def _answer_list_documents(self, message: str, *, scope: AgentScope, db: Session) -> Tuple[str, List[AgentCitation], List[Any]]:
         # If a specific document is selected, return its profile.
         if scope.document_id:
             doc = db.get(models.Document, scope.document_id)
             if not doc:
-                return ("No document found for the selected scope.", [AgentCitation(chunk_id=None, metadata={"source": "db", "kind": "missing_document"})])
+                return (
+                    "No document found for the selected scope.",
+                    [AgentCitation(chunk_id=None, metadata={"source": "db", "kind": "missing_document"})],
+                    [],
+                )
             ver = (
                 db.query(models.DocumentVersion)
                 .filter(models.DocumentVersion.document_id == doc.id)
@@ -365,12 +518,18 @@ class AgentOrchestrator:
                 metadata={"source": "db", "kind": "document_profile", "document_id": doc.id, "version_id": getattr(ver, "id", None)},
                 text_preview=_preview(summary) if summary else None,
             )
-            return answer, [cite]
+            ctx = SimpleNamespace(
+                chunk_id=None,
+                text="\n".join([p for p in parts if p]),
+                score=None,
+                metadata={"source": "db", "kind": "document_profile", "document_id": doc.id, "version_id": getattr(ver, "id", None)},
+            )
+            return answer, [cite], [ctx]
 
         if not scope.kb_id:
             answer = "To list documents, select a Knowledge Base (KB) first (or provide kb_id)."
             cite = AgentCitation(chunk_id=None, metadata={"source": "db", "kind": "missing_kb"}, text_preview=None)
-            return answer, [cite]
+            return answer, [cite], []
 
         docs = (
             db.query(models.Document)
@@ -381,10 +540,11 @@ class AgentOrchestrator:
         if not docs:
             answer = "No documents found in this KB yet."
             cite = AgentCitation(chunk_id=None, metadata={"source": "db", "kind": "document_list", "kb_id": scope.kb_id, "count": 0})
-            return answer, [cite]
+            return answer, [cite], []
 
         lines = [f"Here are {len(docs)} documents in this KB:"]
         cites: List[AgentCitation] = []
+        contexts: List[Any] = []
         d_count = 0
         for d in docs[:50]:
             ver = (
@@ -423,9 +583,38 @@ class AgentOrchestrator:
                     text_preview=_preview(summary) if summary else None,
                 )
             )
+            ctx_text = "\n".join([p for p in [label, (summary or "").strip()] if p])
+            contexts.append(
+                SimpleNamespace(
+                    chunk_id=None,
+                    text=ctx_text,
+                    score=None,
+                    metadata={"source": "db", "kind": "document_profile", "document_id": d.id, "version_id": getattr(ver, "id", None)},
+                )
+            )
 
         answer = "\n".join(lines)
-        return answer, cites
+        return answer, cites, contexts
+
+    def _resolve_doc_id_arg(self, doc_arg: Any, citations: List[AgentCitation]) -> Optional[str]:
+        if not doc_arg:
+            return None
+        doc_id = str(doc_arg)
+        if re.match(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", doc_id):
+            return doc_id
+        tag = doc_id.strip().strip("[]")
+        for c in citations:
+            if c.tag == tag:
+                return (c.metadata or {}).get("document_id")
+        return None
+
+    def _should_break_loop(self, observations: List[Dict[str, Any]], contexts: List[Dict[str, Any]]) -> bool:
+        if not contexts or len(observations) < 4:
+            return False
+        tools = [o.get("tool") for o in observations[-4:]]
+        if any(t in {"answer_with_context", "final"} for t in tools):
+            return False
+        return all(t in {"list_documents", "route_documents", "vector_search", "keyword_search", "get_document_profile"} for t in tools)
 
     def _retrieve(
         self,

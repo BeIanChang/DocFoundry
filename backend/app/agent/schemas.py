@@ -17,7 +17,7 @@ class AgentQueryRequest(BaseModel):
     kb_id: Optional[str] = None
     document_id: Optional[str] = None
     top_k: int = 5
-    max_steps: int = 4
+    max_steps: int = 20
     mode: AgentMode = "auto"
     return_steps: bool = True
 
@@ -64,6 +64,6 @@ class AgentRunRead(BaseModel):
 class AgentRetryRequest(BaseModel):
     message: Optional[str] = None
     top_k: int = 5
-    max_steps: int = 4
+    max_steps: int = 20
     mode: AgentMode = "auto"
     return_steps: bool = True

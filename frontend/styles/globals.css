@@ -228,3 +228,41 @@ button, input, select, textarea{font:inherit}
   margin:0 2px;
   cursor:pointer;
 }
+.chatMarkdown .inlineCite{
+  display:inline-flex;
+  align-items:center;
+  border:1px solid var(--orange-2);
+  background:#fff7f0;
+  color:var(--orange-2);
+  border-radius:999px;
+  padding:1px 6px;
+  font-size:11px;
+  line-height:1.2;
+  margin:0 2px;
+}
+.chatMarkdown{
+  font-size:14px;
+  line-height:1.55;
+  color:inherit;
+}
+.chatMarkdown p{margin:0 0 10px}
+.chatMarkdown p:last-child{margin-bottom:0}
+.chatMarkdown ul,.chatMarkdown ol{margin:6px 0 10px 18px;padding:0}
+.chatMarkdown li{margin:2px 0}
+.chatMarkdown h1,.chatMarkdown h2,.chatMarkdown h3,.chatMarkdown h4{
+  margin:10px 0 6px;
+  line-height:1.25;
+}
+.chatMarkdown code{
+  background:rgba(0,0,0,.04);
+  padding:2px 4px;
+  border-radius:6px;
+  font-size:12px;
+}
+.chatMarkdown pre{
+  background:#fff;
+  border:1px solid var(--border);
+  border-radius:10px;
+  padding:10px;
+  overflow:auto;
+}

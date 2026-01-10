@@ -1,7 +1,9 @@
 import os
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+import re
 import requests
+import time
 
 try:
     from cerebras.cloud.sdk import Cerebras  # type: ignore
@@ -123,17 +125,45 @@ def chat(
     payload: Dict[str, Any] = {"model": chosen_model, "messages": messages, "temperature": temperature}
     if max_tokens is not None:
         payload["max_tokens"] = max_tokens
-    resp = requests.post(
-        "https://api.cerebras.ai/v1/chat/completions",
-        json=payload,
-        headers={"Authorization": f"Bearer {api_key}"},
-        timeout=30,
-    )
-    resp.raise_for_status()
-    data = resp.json()
+    last_err = None
+    for attempt in range(3):
+        resp = requests.post(
+            "https://api.cerebras.ai/v1/chat/completions",
+            json=payload,
+            headers={"Authorization": f"Bearer {api_key}"},
+            timeout=30,
+        )
+        if resp.status_code in {429, 500, 502, 503, 504}:
+            last_err = resp.text
+            time.sleep(1.5 * (attempt + 1))
+            continue
+        resp.raise_for_status()
+        data = resp.json()
+        break
+    else:
+        raise requests.HTTPError(last_err or "Cerebras request failed")
     choices = data.get("choices") or []
     content = choices[0]["message"]["content"] if choices else ""
     return {"provider": provider, "model": chosen_model, "content": content}
+
+
+def normalize_citation_tags(text: str) -> str:
+    if not text:
+        return text
+    # Drop "Sources" lines and normalize bare tag runs like D1D2 -> D1 D2.
+    text = re.sub(r"Sources?\\s*[:：]\\s*(\\[?[SWD]\\d+\\]?\\s*)+", "", text, flags=re.I)
+    text = re.sub(r"Sources?:\\s*(\\[?[SWD]\\d+\\]?\\s*)+", "", text, flags=re.I)
+    text = re.sub(r"([SWD]\\d+)(?=[SWD]\\d+)", r"\\1 ", text)
+    text = re.sub(r"\[\[([SWD]\d+)\]\]", r"[\1]", text)
+    pattern = re.compile(r"\\b([SWD]\\d+)\\b")
+    def repl(match: re.Match) -> str:
+        start, end = match.start(), match.end()
+        prev = text[start - 1] if start - 1 >= 0 else ""
+        nxt = text[end] if end < len(text) else ""
+        if prev == "[" or nxt == "]":
+            return match.group(0)
+        return f"[{match.group(1)}]"
+    return pattern.sub(repl, text)
 
 
 def generate_answer(query: str, contexts: List[Dict]) -> Dict:
@@ -144,10 +174,11 @@ def generate_answer(query: str, contexts: List[Dict]) -> Dict:
     """
     tagged_contexts = _assign_context_tags(contexts)
     provider = DEFAULT_PROVIDER
+
     if provider == "stub":
         joined = "\n\n".join([f"[{c.get('tag')}] {c.get('text', '')}" for c in tagged_contexts])
         answer = f"[stubbed answer] Query: {query}\nContext:\n{joined}"
-        return {"answer": answer, "provider": provider}
+        return {"answer": normalize_citation_tags(answer), "provider": provider}
     elif provider == "cerebras":
         model = DEFAULT_CEREBRAS_MODEL
         prompt_context = "\n\n".join([f"[{c.get('tag')}] {c.get('text', '')}" for c in tagged_contexts])
@@ -156,9 +187,12 @@ def generate_answer(query: str, contexts: List[Dict]) -> Dict:
             {
                 "role": "system",
                 "content": (
-                    "You are a helpful assistant. Use the provided context to answer. "
-                    "Whenever you use a source, include its tag inline like [S1] or [W1]. "
-                    "Use only the tags provided in Sources. Do not invent tags."
+                    "You are a helpful assistant. Answer the user's question directly and succinctly. "
+                    "Use the provided context only as evidence, not as content to dump. "
+                    "Do not list documents or repeat source text unless explicitly asked. "
+                    "When you use a source, include its tag inline like [S1] or [W1]. "
+                    "Use only the tags provided in Sources. Do not invent tags. "
+                    "If the context doesn't support the answer, say so briefly."
                 ),
             },
             {"role": "user", "content": f"Question: {query}\n\nSources:\n{sources}\n\nContext:\n{prompt_context}"},
@@ -168,10 +202,10 @@ def generate_answer(query: str, contexts: List[Dict]) -> Dict:
             content = resp.get("content") or ""
             if not content:
                 content = "[cerebras] no content returned"
-            return {"answer": content, "provider": provider, "model": resp.get("model")}
+            return {"answer": normalize_citation_tags(content), "provider": provider, "model": resp.get("model")}
         except Exception as exc:
             return {"answer": f"[cerebras] request failed: {exc}", "provider": provider, "model": model}
     else:
         # Placeholder for future providers
         joined = "\n\n".join([c.get("text", "") for c in contexts])
-        return {"answer": f"[unsupported provider {provider}] Context:\n{joined}", "provider": provider}
+        return {"answer": normalize_citation_tags(f"[unsupported provider {provider}] Context:\n{joined}"), "provider": provider}

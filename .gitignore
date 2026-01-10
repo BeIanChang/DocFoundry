@@ -8,3 +8,4 @@ chroma_db/
 /.DS_Store
 APIKEY
 k8s/secrets.yaml
+uploads/

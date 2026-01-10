@@ -63,6 +63,8 @@ def plan_next_step(
                 "- Keep rationale short (<= 1 sentence).\n"
                 "- Output must be JSON only. No markdown.\n"
                 "- If scope.document_id is set, do NOT route other documents.\n"
+                "- Avoid repeating the same action more than once in a run.\n"
+                "- If a list_documents/get_document_profile observation includes context_ready=true, you already have document summaries; proceed to answer_with_context or vector_search.\n"
                 "- If the user asks to list/show documents, choose list_documents.\n"
                 "- If you need evidence from docs, choose route_documents (optional) then vector_search then answer_with_context.\n"
                 "- Do NOT ask the user clarifying questions; make best-effort assumptions and proceed.\n"
