@@ -2,7 +2,7 @@
 
 ## 🎥 Introduction
 
-[![Demo](assets/thumbnail.jpg)](https://github.com/user-attachments/assets/ff8bae84-a8c3-4200-8d8e-423e72579754)
+[![Demo](assets/thumbnail.jpg)](https://github.com/user-attachments/assets/4e63a696-0542-4c4f-adc8-ba57e4d5d864)
 
 DocFoundry turns messy internal documents into a living, queryable knowledge base with an agent that can reason across files, cite sources inline, and surface what matters in seconds.
 
