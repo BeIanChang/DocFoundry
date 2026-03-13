@@ -14,6 +14,7 @@ ALLOWED_ACTIONS = {
     "route_documents",
     "vector_search",
     "keyword_search",
+    "grep_search",
     "web_search",
     "answer_with_context",
 }
@@ -70,11 +71,13 @@ def plan_next_step(
                 "- Do NOT ask the user clarifying questions; make best-effort assumptions and proceed.\n"
                 "- If info is missing/ambiguous, prefer vector_search and then produce a final answer that states assumptions/uncertainty.\n"
                 "- Prefer keyword_search for exact terms (IDs, numbers, quoted phrases); vector_search for semantic queries.\n"
+                "- Prefer grep_search for regex/pattern matching or exact multi-line snippets.\n"
                 "- Use web_search for general internet queries not likely contained in the KB.\n"
                 "Args schema hints:\n"
                 "- final: {\"answer\": \"...\"}\n"
                 "- vector_search: {\"query\": \"...\", \"top_k\": <int optional>, \"document_id\": <str optional>}\n"
                 "- keyword_search: {\"query\": \"...\", \"top_k\": <int optional>, \"document_id\": <str optional>}\n"
+                "- grep_search: {\"query\": \"re:... or /.../ or literal\", \"top_k\": <int optional>, \"document_id\": <str optional>}\n"
                 "- web_search: {\"query\": \"...\", \"top_k\": <int optional>}\n"
             ),
         },
@@ -96,7 +99,8 @@ def plan_next_step(
     resp = chat(messages, temperature=0.0, max_tokens=300)
     obj = _extract_json_obj((resp.get("content") or "").strip()) or {}
     action = str(obj.get("action") or "").strip()
-    args = obj.get("args") if isinstance(obj.get("args"), dict) else {}
+    args_raw = obj.get("args")
+    args = args_raw if isinstance(args_raw, dict) else {}
     rationale = str(obj.get("rationale") or "").strip()
 
     if action not in ALLOWED_ACTIONS:

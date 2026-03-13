@@ -3,6 +3,7 @@ Backend (FastAPI)
 - Run locally (Windows/PowerShell):
   - `python -m venv .venv` and activate it with `source .venv/bin/activate`
   - `pip install -r requirements.txt`
+  - optional LangGraph engine: `pip install -r requirements-langgraph.txt`
   - set env (example):  
     ```
     $env:DATABASE_URL="postgresql://postgres:postgres@localhost:5432/docfoundry"
@@ -10,6 +11,7 @@ Backend (FastAPI)
     $env:EMBED_MODEL="all-MiniLM-L6-v2"
     $env:LLM_PROVIDER="stub"      # or cerebras with API key
     $env:JWT_SECRET="dev-secret-change-me"
+    $env:AGENT_LOOP_ENGINE="classic"   # classic | langgraph
     ```
   - start: `uvicorn app.main:app --reload --host 0.0.0.0 --port 8000`
 
@@ -47,3 +49,4 @@ Backend (FastAPI)
 - Notes:
   - DB schema managed by Alembic (migration `0002_add_pw_hash_to_users` adds password hash).
   - LLM provider defaults to stub; set `LLM_PROVIDER=cerebras` + `CEREBRAS_API_KEY` to call Cerebras.
+  - Agent loop tools now include `keyword_search`, `grep_search` (regex/literal pattern search), and `vector_search`.

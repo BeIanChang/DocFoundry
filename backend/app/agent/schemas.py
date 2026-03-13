@@ -7,6 +7,7 @@ from pydantic import BaseModel, Field
 
 
 AgentMode = Literal["auto", "answer", "summarize", "extract"]
+LoopEngine = Literal["classic", "langgraph"]
 
 
 class AgentQueryRequest(BaseModel):
@@ -19,6 +20,7 @@ class AgentQueryRequest(BaseModel):
     top_k: int = 5
     max_steps: int = 20
     mode: AgentMode = "auto"
+    loop_engine: Optional[LoopEngine] = None
     return_steps: bool = True
 
 
@@ -66,4 +68,5 @@ class AgentRetryRequest(BaseModel):
     top_k: int = 5
     max_steps: int = 20
     mode: AgentMode = "auto"
+    loop_engine: Optional[LoopEngine] = None
     return_steps: bool = True

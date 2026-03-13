@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session
 from app.agent.schemas import AgentCitation, AgentQueryRequest, AgentQueryResponse
 import os
 from types import SimpleNamespace
-from app.agent.tools import AnswerTool, KeywordSearchTool, VectorSearchTool, WebSearchTool
+from app.agent.tools import AnswerTool, GrepSearchTool, KeywordSearchTool, VectorSearchTool, WebSearchTool
 from app.agent.planner import plan_next_step
 from app.db import models
 from app.embeddings.llm import chat, normalize_citation_tags
@@ -44,6 +44,7 @@ class AgentOrchestrator:
     def __init__(self, *, search_tool: VectorSearchTool | None = None, answer_tool: AnswerTool | None = None):
         self.search_tool = search_tool or VectorSearchTool()
         self.keyword_tool = KeywordSearchTool()
+        self.grep_tool = GrepSearchTool()
         self.web_tool = WebSearchTool()
         self.answer_tool = answer_tool or AnswerTool()
 
@@ -171,7 +172,13 @@ class AgentOrchestrator:
         if scope.document_id and not scope.kb_id:
             doc = db.get(models.Document, scope.document_id)
             if doc and doc.kb_id:
-                scope.kb_id = doc.kb_id
+                scope = AgentScope(
+                    project_id=scope.project_id,
+                    project_ids=scope.project_ids,
+                    folder_id=scope.folder_id,
+                    kb_id=doc.kb_id,
+                    document_id=scope.document_id,
+                )
         max_steps = max(1, int(req.max_steps or 20))
         top_k = max(1, int(req.top_k or 5))
 
@@ -354,6 +361,58 @@ class AgentOrchestrator:
                         "tool": "keyword_search",
                         "matches": len(results),
                         "top": [{"chunk_id": r.chunk_id, "score": r.score, "matches": r.matches[:5]} for r in results[:5]],
+                    }
+                )
+                if results:
+                    llm_resp = self.answer_tool.answer(req.message, last_tagged_contexts[:top_k])
+                    answer_text = llm_resp.get("answer") or ""
+                    provider = llm_resp.get("provider")
+                    model = llm_resp.get("model")
+                    observations.append({"tool": "answer_with_context", "provider": provider, "model": model})
+                    break
+                continue
+
+            if action == "grep_search":
+                q = plan.args.get("query") or req.message
+                doc_id = scope.document_id
+                if not doc_id and plan.args.get("document_id"):
+                    doc_id = str(plan.args.get("document_id"))
+                    if scope.kb_id:
+                        doc = db.get(models.Document, doc_id)
+                        if not doc or (doc.kb_id and doc.kb_id != scope.kb_id):
+                            observations.append({"tool": "grep_search", "error": "document_id not in kb scope"})
+                            continue
+                    else:
+                        observations.append({"tool": "grep_search", "error": "missing kb_id for document filter"})
+                        continue
+
+                results = self.grep_tool.search(
+                    q,
+                    db=db,
+                    top_k=top_k,
+                    kb_id=scope.kb_id,
+                    kb_ids=None,
+                    document_id=doc_id,
+                    document_ids=None,
+                    project_ids=scope.project_ids,
+                    folder_id=scope.folder_id,
+                )
+                last_contexts = results
+                last_tagged_contexts, citations = self._tag_contexts(results)
+                last_citations = citations
+                observations.append(
+                    {
+                        "tool": "grep_search",
+                        "query": q,
+                        "matches": len(results),
+                        "top": [
+                            {
+                                "chunk_id": r.chunk_id,
+                                "score": r.score,
+                                "sample_matches": [m.get("match") for m in (r.matches or [])[:5]],
+                            }
+                            for r in results[:5]
+                        ],
                     }
                 )
                 if results:
@@ -614,7 +673,7 @@ class AgentOrchestrator:
         tools = [o.get("tool") for o in observations[-4:]]
         if any(t in {"answer_with_context", "final"} for t in tools):
             return False
-        return all(t in {"list_documents", "route_documents", "vector_search", "keyword_search", "get_document_profile"} for t in tools)
+        return all(t in {"list_documents", "route_documents", "vector_search", "keyword_search", "grep_search", "get_document_profile"} for t in tools)
 
     def _retrieve(
         self,

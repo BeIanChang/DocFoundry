@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import os
+
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
+from app.agent.langgraph_orchestrator import AgentLangGraphOrchestrator
 from app.agent.orchestrator import AgentOrchestrator
 from app.agent.schemas import AgentQueryRequest, AgentQueryResponse, AgentRetryRequest, AgentRunRead, AgentCitation, AgentStepRead
 from app.api.auth import get_current_user
@@ -11,12 +14,33 @@ from app.db import models
 
 router = APIRouter(prefix="/agent", tags=["agent"])
 
-_orchestrator = AgentOrchestrator()
+_classic_orchestrator = AgentOrchestrator()
+_langgraph_orchestrator = AgentLangGraphOrchestrator()
+
+
+def _resolve_engine(loop_engine: str | None) -> str:
+    requested = (loop_engine or os.environ.get("AGENT_LOOP_ENGINE") or "classic").strip().lower()
+    if requested in {"classic", "langgraph"}:
+        return requested
+    return "classic"
+
+
+def _pick_orchestrator(loop_engine: str | None):
+    engine = _resolve_engine(loop_engine)
+    if engine == "langgraph":
+        if not _langgraph_orchestrator.is_available():
+            raise HTTPException(
+                status_code=500,
+                detail="langgraph engine requested but dependency is not installed; use classic or install langgraph",
+            )
+        return _langgraph_orchestrator
+    return _classic_orchestrator
 
 
 @router.post("/query", response_model=AgentQueryResponse)
 def agent_query(payload: AgentQueryRequest, db: Session = Depends(get_session), user=Depends(get_current_user)):
-    return _orchestrator.run(payload, db=db, user=user)
+    orchestrator = _pick_orchestrator(payload.loop_engine)
+    return orchestrator.run(payload, db=db, user=user)
 
 
 @router.get("/runs/{run_id}", response_model=AgentRunRead)
@@ -65,6 +89,8 @@ def retry_run(run_id: str, payload: AgentRetryRequest, db: Session = Depends(get
         top_k=payload.top_k,
         max_steps=payload.max_steps,
         mode=payload.mode,
+        loop_engine=payload.loop_engine,
         return_steps=payload.return_steps,
     )
-    return _orchestrator.run(req, db=db, user=user)
+    orchestrator = _pick_orchestrator(req.loop_engine)
+    return orchestrator.run(req, db=db, user=user)

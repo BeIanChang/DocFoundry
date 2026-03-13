@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import re
 from typing import Any, Dict, List, Optional
 
 from sqlalchemy.orm import Session
@@ -155,6 +156,124 @@ class KeywordSearchTool:
                         "end_pos": chunk.end_pos,
                         "search": "keyword",
                         "matches": matched[:12],
+                    },
+                )
+            )
+
+        scored.sort(key=lambda r: (r.score is None, -(r.score or 0.0)))
+        return scored[: max(1, int(top_k))]
+
+
+@dataclass(frozen=True)
+class GrepSearchResult:
+    chunk_id: Optional[str]
+    text: str
+    score: Optional[float]
+    metadata: Dict[str, Any]
+    matches: List[Dict[str, Any]]
+
+
+def _compile_grep_pattern(query: str) -> Optional[re.Pattern[str]]:
+    q = (query or "").strip()
+    if not q:
+        return None
+
+    source = q
+    flags = re.IGNORECASE | re.MULTILINE
+    if q.startswith("re:"):
+        source = q[3:].strip()
+    elif len(q) > 2 and q.startswith("/") and q.endswith("/"):
+        source = q[1:-1]
+    else:
+        source = re.escape(q)
+
+    if not source:
+        return None
+
+    try:
+        return re.compile(source, flags)
+    except re.error:
+        return None
+
+
+class GrepSearchTool:
+    """
+    Regex/grep-style search over chunk text.
+
+    Query modes:
+    - plain text: "net profit" (escaped literal)
+    - explicit regex: "re:net\s+profit\s+\d{4}"
+    - slash regex: "/net\\s+profit\\s+\\d{4}/"
+    """
+
+    def search(
+        self,
+        query: str,
+        *,
+        db: Session,
+        top_k: int,
+        kb_id: Optional[str] = None,
+        kb_ids: Optional[List[str]] = None,
+        document_id: Optional[str] = None,
+        document_ids: Optional[List[str]] = None,
+        project_ids: Optional[List[str]] = None,
+        folder_id: Optional[str] = None,
+        max_candidates: int = 300,
+    ) -> List[GrepSearchResult]:
+        pattern = _compile_grep_pattern(query)
+        if pattern is None:
+            return []
+
+        qry = (
+            db.query(models.Chunk, models.DocumentVersion, models.Document)
+            .join(models.DocumentVersion, models.DocumentVersion.id == models.Chunk.version_id)
+            .join(models.Document, models.Document.id == models.DocumentVersion.document_id)
+        )
+        if kb_id:
+            qry = qry.filter(models.Document.kb_id == kb_id)
+        elif kb_ids:
+            qry = qry.filter(models.Document.kb_id.in_(kb_ids))
+        elif folder_id:
+            qry = qry.filter(models.Document.folder_id == folder_id)
+        elif project_ids:
+            qry = qry.join(models.KnowledgeBase, models.KnowledgeBase.id == models.Document.kb_id).filter(
+                models.KnowledgeBase.project_id.in_(project_ids)
+            )
+        if document_id:
+            qry = qry.filter(models.Document.id == document_id)
+        elif document_ids:
+            qry = qry.filter(models.Document.id.in_(document_ids))
+
+        rows = qry.order_by(models.Chunk.id.asc()).limit(int(max_candidates)).all()
+
+        scored: List[GrepSearchResult] = []
+        for chunk, version, document in rows:
+            text = chunk.text or ""
+            if not text:
+                continue
+            hits = []
+            for idx, m in enumerate(pattern.finditer(text)):
+                if idx >= 20:
+                    break
+                hits.append({"match": m.group(0), "start": m.start(), "end": m.end()})
+            if not hits:
+                continue
+
+            score = float(len(hits))
+            scored.append(
+                GrepSearchResult(
+                    chunk_id=chunk.id,
+                    text=text,
+                    score=score,
+                    matches=hits,
+                    metadata={
+                        "kb_id": document.kb_id,
+                        "document_id": document.id,
+                        "version_id": version.id,
+                        "start_pos": chunk.start_pos,
+                        "end_pos": chunk.end_pos,
+                        "search": "grep",
+                        "pattern": pattern.pattern,
                     },
                 )
             )
