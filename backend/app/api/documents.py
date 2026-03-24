@@ -89,7 +89,7 @@ def update_document(doc_id: str, payload: DocumentUpdate, db: Session = Depends(
     if not doc:
         raise HTTPException(status_code=404, detail="document not found")
     allowed = {'title', 'status', 'metadata'}
-    for field, val in payload.dict(exclude_unset=True).items():
+    for field, val in payload.model_dump(exclude_unset=True).items():
         if field in allowed:
             setattr(doc, field, val)
     db.add(doc)
@@ -353,7 +353,7 @@ def update_document_profile(doc_id: str, payload: DocumentProfileUpdate, db: Ses
         )
         db.add(profile)
 
-    data = payload.dict(exclude_unset=True)
+    data = payload.model_dump(exclude_unset=True)
     for field, val in data.items():
         setattr(profile, field, val)
     if profile.title is None:

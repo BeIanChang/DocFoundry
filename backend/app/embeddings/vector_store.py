@@ -1,4 +1,5 @@
 import hashlib
+import math
 import os
 import struct
 from typing import Dict, List, Optional, Tuple
@@ -69,7 +70,8 @@ def _ensure_schema(engine: Engine):
     if _schema_ready:
         return
     if engine.dialect.name != "postgresql":
-        raise RuntimeError("pgvector requires a PostgreSQL database")
+        _schema_ready = True
+        return
     with engine.begin() as conn:
         try:
             conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
@@ -127,6 +129,8 @@ def add_documents(docs: List[Dict]):
     if not docs:
         return []
     engine = get_engine()
+    if engine.dialect.name != "postgresql":
+        return [d["id"] for d in docs]
     _ensure_schema(engine)
     embedder = _get_embedder()
     ids = [d["id"] for d in docs]
@@ -177,6 +181,15 @@ def query_documents(
 ):
     """Return top matches; optionally filter by kb_id and/or document_id."""
     engine = get_engine()
+    if engine.dialect.name != "postgresql":
+        return _query_documents_sqlite(
+            query,
+            n_results=n_results,
+            kb_id=kb_id,
+            kb_ids=kb_ids,
+            document_id=document_id,
+            document_ids=document_ids,
+        )
     _ensure_schema(engine)
     embedder = _get_embedder()
     embeddings = embedder.encode([query], show_progress_bar=False)
@@ -218,7 +231,101 @@ def delete_documents(ids: List[str]) -> int:
     if not ids:
         return 0
     engine = get_engine()
+    if engine.dialect.name != "postgresql":
+        return len(ids)
     _ensure_schema(engine)
     with engine.begin() as conn:
         conn.execute(text("DELETE FROM vector_embeddings WHERE chunk_id = ANY(:ids)"), {"ids": ids})
     return len(ids)
+
+
+def _cosine_distance(a: List[float], b: List[float]) -> float:
+    dot = sum(x * y for x, y in zip(a, b))
+    norm_a = math.sqrt(sum(x * x for x in a))
+    norm_b = math.sqrt(sum(y * y for y in b))
+    if norm_a == 0.0 or norm_b == 0.0:
+        return 1.0
+    cosine = max(-1.0, min(1.0, dot / (norm_a * norm_b)))
+    return 1.0 - cosine
+
+
+def _query_documents_sqlite(
+    query: str,
+    *,
+    n_results: int,
+    kb_id: Optional[str],
+    kb_ids: Optional[List[str]],
+    document_id: Optional[str],
+    document_ids: Optional[List[str]],
+):
+    engine = get_engine()
+    embedder = _get_embedder()
+    query_emb = embedder.encode([query], show_progress_bar=False)
+    if hasattr(query_emb, "tolist"):
+        query_emb = query_emb.tolist()
+    query_vec = query_emb[0]
+
+    clauses = []
+    params: Dict[str, object] = {}
+    if kb_id:
+        clauses.append("d.kb_id = :kb_id")
+        params["kb_id"] = kb_id
+    elif kb_ids:
+        placeholders = []
+        for idx, value in enumerate(kb_ids):
+            key = f"kb_{idx}"
+            placeholders.append(f":{key}")
+            params[key] = value
+        clauses.append(f"d.kb_id IN ({', '.join(placeholders)})")
+    if document_id:
+        clauses.append("d.id = :document_id")
+        params["document_id"] = document_id
+    elif document_ids:
+        placeholders = []
+        for idx, value in enumerate(document_ids):
+            key = f"doc_{idx}"
+            placeholders.append(f":{key}")
+            params[key] = value
+        clauses.append(f"d.id IN ({', '.join(placeholders)})")
+
+    where_sql = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+    sql = f"""
+        SELECT c.id, c.text, d.kb_id, d.id, dv.id, c.start_pos, c.end_pos
+        FROM chunks c
+        JOIN document_versions dv ON dv.id = c.version_id
+        JOIN documents d ON d.id = dv.document_id
+        {where_sql}
+    """
+    with engine.begin() as conn:
+        rows = conn.execute(text(sql), params).fetchall()
+
+    scored = []
+    texts = [r[1] or "" for r in rows]
+    if not texts:
+        return {"ids": [[]], "documents": [[]], "metadatas": [[]], "distances": [[]]}
+    embeddings = embedder.encode(texts, show_progress_bar=False)
+    if hasattr(embeddings, "tolist"):
+        embeddings = embeddings.tolist()
+    for row, emb in zip(rows, embeddings):
+        scored.append(
+            (
+                row[0],
+                row[1],
+                {
+                    "kb_id": row[2],
+                    "document_id": row[3],
+                    "version_id": row[4],
+                    "start_pos": row[5],
+                    "end_pos": row[6],
+                },
+                _cosine_distance(query_vec, emb),
+            )
+        )
+    scored.sort(key=lambda item: item[3])
+    top = scored[: max(1, int(n_results))]
+    return {
+        "ids": [[item[0] for item in top]],
+        "documents": [[item[1] for item in top]],
+        "metadatas": [[item[2] for item in top]],
+        "distances": [[item[3] for item in top]],
+    }

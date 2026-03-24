@@ -18,7 +18,7 @@ if not DATABASE_URL:
 
 engine_args = {}
 if DATABASE_URL.startswith('sqlite'):
-    raise RuntimeError("SQLite is disabled. Use PostgreSQL (pgvector requires it).")
+    engine_args["connect_args"] = {"check_same_thread": False}
 
 engine = create_engine(DATABASE_URL, echo=False, future=True, **engine_args)
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False, future=True)

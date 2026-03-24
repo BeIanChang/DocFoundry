@@ -12,6 +12,9 @@ except Exception:
 
 DEFAULT_PROVIDER = os.environ.get("LLM_PROVIDER", "stub")
 DEFAULT_CEREBRAS_MODEL = os.environ.get("CEREBRAS_MODEL", "qwen-3-235b-a22b-instruct-2507")
+DEFAULT_SERVE_URL = os.environ.get("DOCFOUNDRY_SERVE_URL", "http://localhost:8000/generate")
+DEFAULT_SERVE_MODE = os.environ.get("DOCFOUNDRY_SERVE_MODE", "stage_aware").strip().lower()
+DEFAULT_SERVE_TIMEOUT_SECONDS = float(os.environ.get("DOCFOUNDRY_SERVE_TIMEOUT_SECONDS", "120"))
 
 
 def _load_api_key_from_file(path: Path) -> str:
@@ -98,6 +101,39 @@ def chat(
         joined = "\n\n".join([m.get("content", "") for m in messages if m.get("role") != "system"])
         return {"provider": provider, "model": None, "content": f"[stubbed chat]\n{joined}"}
 
+    if provider == "docfoundry_serve":
+        stage = _infer_stage_from_messages(messages)
+        prompt = _messages_to_prompt(messages)
+        payload: Dict[str, Any] = {
+            "stage": stage,
+            "prompt": prompt,
+            "metadata": {
+                "provider": provider,
+                "source": "chat",
+                "message_count": len(messages),
+            },
+        }
+        headers = _serve_headers()
+        try:
+            resp = requests.post(
+                DEFAULT_SERVE_URL,
+                json=payload,
+                headers=headers,
+                timeout=DEFAULT_SERVE_TIMEOUT_SECONDS,
+            )
+            if resp.status_code >= 400:
+                raise requests.HTTPError(f"serve request failed: {resp.status_code} {resp.text}")
+            data = resp.json()
+            return {
+                "provider": provider,
+                "model": data.get("model"),
+                "content": data.get("text") or "",
+                "policy": data.get("policy"),
+                "metrics": data.get("metrics"),
+            }
+        except Exception as exc:
+            raise RuntimeError(f"DocFoundry-Serve request failed: {exc}") from exc
+
     if provider != "cerebras":
         raise RuntimeError(f"unsupported provider {provider}")
 
@@ -166,6 +202,39 @@ def normalize_citation_tags(text: str) -> str:
     return pattern.sub(repl, text)
 
 
+def _messages_to_prompt(messages: List[Dict[str, str]]) -> str:
+    parts: List[str] = []
+    for m in messages:
+        role = (m.get("role") or "user").strip().lower()
+        content = (m.get("content") or "").strip()
+        if not content:
+            continue
+        if role == "system":
+            parts.append(content)
+        else:
+            parts.append(f"{role.title()}: {content}")
+    return "\n\n".join(parts).strip()
+
+
+def _infer_stage_from_messages(messages: List[Dict[str, str]]) -> str:
+    joined = "\n\n".join([(m.get("content") or "") for m in messages]).lower()
+    if "agent planner" in joined or "decide the next action" in joined:
+        return "planning"
+    if "refining a draft answer" in joined or "preserve all factual claims" in joined:
+        return "refinement"
+    return "synthesis"
+
+
+def _serve_headers() -> Dict[str, str]:
+    headers = {"Content-Type": "application/json"}
+    if DEFAULT_SERVE_MODE in {"baseline", "stage_aware"}:
+        headers["X-Router-Mode"] = DEFAULT_SERVE_MODE
+    auth_token = (os.environ.get("DOCFOUNDRY_SERVE_TOKEN") or "").strip()
+    if auth_token:
+        headers["Authorization"] = f"Bearer {auth_token}"
+    return headers
+
+
 def generate_answer(query: str, contexts: List[Dict]) -> Dict:
     """
     Minimal LLM abstraction.
@@ -179,6 +248,43 @@ def generate_answer(query: str, contexts: List[Dict]) -> Dict:
         joined = "\n\n".join([f"[{c.get('tag')}] {c.get('text', '')}" for c in tagged_contexts])
         answer = f"[stubbed answer] Query: {query}\nContext:\n{joined}"
         return {"answer": normalize_citation_tags(answer), "provider": provider}
+    elif provider == "docfoundry_serve":
+        prompt_context = "\n\n".join([f"[{c.get('tag')}] {c.get('text', '')}" for c in tagged_contexts])
+        sources = "\n".join([f"[{c.get('tag')}] {c.get('text', '')[:220]}" for c in tagged_contexts])
+        prompt = (
+            "You are a helpful assistant. Answer the user's question directly and succinctly. "
+            "Use the provided context only as evidence. Use inline citations like [S1].\n\n"
+            f"Question: {query}\n\nSources:\n{sources}\n\nContext:\n{prompt_context}"
+        )
+        payload = {
+            "stage": "synthesis",
+            "prompt": prompt,
+            "metadata": {
+                "provider": provider,
+                "source": "generate_answer",
+                "context_count": len(tagged_contexts),
+            },
+        }
+        try:
+            resp = requests.post(
+                DEFAULT_SERVE_URL,
+                json=payload,
+                headers=_serve_headers(),
+                timeout=DEFAULT_SERVE_TIMEOUT_SECONDS,
+            )
+            if resp.status_code >= 400:
+                raise requests.HTTPError(f"serve request failed: {resp.status_code} {resp.text}")
+            data = resp.json()
+            content = data.get("text") or ""
+            if not content:
+                content = "[docfoundry_serve] no content returned"
+            return {
+                "answer": normalize_citation_tags(content),
+                "provider": provider,
+                "model": data.get("model"),
+            }
+        except Exception as exc:
+            return {"answer": f"[docfoundry_serve] request failed: {exc}", "provider": provider, "model": None}
     elif provider == "cerebras":
         model = DEFAULT_CEREBRAS_MODEL
         prompt_context = "\n\n".join([f"[{c.get('tag')}] {c.get('text', '')}" for c in tagged_contexts])

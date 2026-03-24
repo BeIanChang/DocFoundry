@@ -1,4 +1,4 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 from typing import Optional, Any
 from datetime import datetime
 
@@ -17,8 +17,7 @@ class KnowledgeBaseRead(BaseModel):
     metadata: Optional[Any]
     created_at: datetime
 
-    class Config:
-        orm_mode = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class KnowledgeBaseUpdate(BaseModel):
@@ -40,8 +39,7 @@ class DocumentRead(BaseModel):
     metadata: Optional[Any]
     created_at: datetime
 
-    class Config:
-        orm_mode = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class DocumentUpdate(BaseModel):

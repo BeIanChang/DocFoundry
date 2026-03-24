@@ -9,3 +9,6 @@ chroma_db/
 APIKEY
 k8s/secrets.yaml
 uploads/
+backend/.cache/
+backend/*.log
+backend/docfoundry.db

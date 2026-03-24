@@ -80,7 +80,7 @@ def update_kb(kb_id: str, payload: KnowledgeBaseUpdate, db: Session = Depends(ge
     if not kb:
         raise HTTPException(status_code=404, detail="knowledge base not found")
     allowed = {'name', 'description'}
-    for field, val in payload.dict(exclude_unset=True).items():
+    for field, val in payload.model_dump(exclude_unset=True).items():
         if field in allowed:
             setattr(kb, field, val)
     db.add(kb)

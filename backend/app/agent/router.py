@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 from app.agent.langgraph_orchestrator import AgentLangGraphOrchestrator
 from app.agent.orchestrator import AgentOrchestrator
 from app.agent.schemas import AgentQueryRequest, AgentQueryResponse, AgentRetryRequest, AgentRunRead, AgentCitation, AgentStepRead
+from app.cache.redis_cache import agent_query_cache
 from app.api.auth import get_current_user
 from app.db.session import get_session
 from app.db import models
@@ -39,8 +40,13 @@ def _pick_orchestrator(loop_engine: str | None):
 
 @router.post("/query", response_model=AgentQueryResponse)
 def agent_query(payload: AgentQueryRequest, db: Session = Depends(get_session), user=Depends(get_current_user)):
+    cached = agent_query_cache.get(payload, user.get("id"))
+    if cached is not None:
+        return cached
     orchestrator = _pick_orchestrator(payload.loop_engine)
-    return orchestrator.run(payload, db=db, user=user)
+    response = orchestrator.run(payload, db=db, user=user)
+    agent_query_cache.set(payload, user.get("id"), response)
+    return response
 
 
 @router.get("/runs/{run_id}", response_model=AgentRunRead)

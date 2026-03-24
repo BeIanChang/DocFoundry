@@ -497,7 +497,7 @@ class AgentOrchestrator:
         run.final_answer = answer_text
         run.provider = provider
         run.model = model
-        run.citations = [c.dict() for c in citations]
+        run.citations = [c.model_dump() for c in citations]
         db.add(run)
         db.commit()
 
